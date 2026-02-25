@@ -1,0 +1,19 @@
+[package]
+name = "starfield-gaia"
+version = "0.1.0"
+description = "ESA Gaia star catalog loader and downloader — DR1/DR2/DR3 support"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+starfield = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+flate2 = { workspace = true }
+md5 = { workspace = true }
+regex = { workspace = true }
+rand = { workspace = true }
+nalgebra = { workspace = true }
