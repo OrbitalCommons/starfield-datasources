@@ -6,7 +6,7 @@ use std::io::Read;
 use std::time::{Duration, Instant};
 
 use starfield::{Result, StarfieldError};
-use starfield_datasource_utils::build_http_client;
+use starfield_datasource_utils::{build_http_client, check_response_status};
 
 use crate::mpcorb::{parse_mpcorb, MpcOrbRecord};
 use crate::observatory::{parse_observatory_codes, Observatory};
@@ -50,17 +50,12 @@ impl MpcClient {
         self.rate_limit();
         log::info!("Fetching {}", url);
 
-        let response = self.client.get(url).send().map_err(|e| {
-            StarfieldError::DataError(format!("MPC request failed for {}: {}", url, e))
-        })?;
-
-        if !response.status().is_success() {
-            return Err(StarfieldError::DataError(format!(
-                "MPC returned HTTP {} for {}",
-                response.status(),
-                url
-            )));
-        }
+        let response = check_response_status(
+            self.client.get(url).send().map_err(|e| {
+                StarfieldError::DataError(format!("MPC request failed for {}: {}", url, e))
+            })?,
+            url,
+        )?;
 
         response
             .text()
@@ -72,17 +67,12 @@ impl MpcClient {
         self.rate_limit();
         log::info!("Fetching {} (bytes)", url);
 
-        let mut response = self.client.get(url).send().map_err(|e| {
-            StarfieldError::DataError(format!("MPC request failed for {}: {}", url, e))
-        })?;
-
-        if !response.status().is_success() {
-            return Err(StarfieldError::DataError(format!(
-                "MPC returned HTTP {} for {}",
-                response.status(),
-                url
-            )));
-        }
+        let mut response = check_response_status(
+            self.client.get(url).send().map_err(|e| {
+                StarfieldError::DataError(format!("MPC request failed for {}: {}", url, e))
+            })?,
+            url,
+        )?;
 
         let mut bytes = Vec::new();
         response.read_to_end(&mut bytes).map_err(|e| {

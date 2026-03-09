@@ -9,7 +9,7 @@
 use crate::types::*;
 use serde_json::Value;
 use starfield::{Result, StarfieldError};
-use starfield_datasource_utils::build_http_client;
+use starfield_datasource_utils::{build_http_client, check_response_status};
 use std::collections::HashMap;
 
 const SBDB_API_URL: &str = "https://ssd-api.jpl.nasa.gov/sbdb.api";
@@ -234,19 +234,13 @@ impl SbdbClient {
             .send()
             .map_err(|e| StarfieldError::DataError(format!("SBDB request failed: {}", e)))?;
 
-        let status = response.status();
-        if status.as_u16() == 300 {
+        if response.status().as_u16() == 300 {
             return Err(StarfieldError::DataError(
                 "Ambiguous search: multiple objects matched. Try a more specific query."
                     .to_string(),
             ));
         }
-        if !status.is_success() {
-            return Err(StarfieldError::DataError(format!(
-                "SBDB API returned HTTP {}",
-                status
-            )));
-        }
+        let response = check_response_status(response, "SBDB API")?;
 
         response.json::<Value>().map_err(|e| {
             StarfieldError::DataError(format!("Failed to parse SBDB JSON response: {}", e))

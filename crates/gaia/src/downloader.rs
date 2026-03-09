@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 use starfield::{Result, StarfieldError};
-use starfield_datasource_utils::build_http_client;
+use starfield_datasource_utils::{build_http_client, check_response_status};
 
 // Base URL for Gaia DR1 catalog
 const GAIA_DR1_BASE_URL: &str = "https://cdn.gea.esac.esa.int/Gaia/gdr1/gaia_source/csv/";
@@ -58,18 +58,13 @@ fn download_file<P: AsRef<Path>>(url: &str, path: P) -> Result<()> {
     println!("Downloading: {}", url);
 
     // Make the request
-    let mut response = client
-        .get(url)
-        .send()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to download file: {}", e)))?;
-
-    // Check if the request was successful
-    if !response.status().is_success() {
-        return Err(StarfieldError::DataError(format!(
-            "Failed to download file, status: {}",
-            response.status()
-        )));
-    }
+    let mut response = check_response_status(
+        client
+            .get(url)
+            .send()
+            .map_err(|e| StarfieldError::DataError(format!("Failed to download file: {}", e)))?,
+        url,
+    )?;
 
     // Get file size for progress tracking
     let total_size = response.content_length().unwrap_or(0);
@@ -200,17 +195,13 @@ fn list_gaia_files() -> Result<Vec<String>> {
     let client = build_http_client(60)?;
 
     println!("Fetching Gaia catalog index...");
-    let response = client
-        .get(GAIA_DR1_BASE_URL)
-        .send()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to fetch Gaia index: {}", e)))?;
-
-    if !response.status().is_success() {
-        return Err(StarfieldError::DataError(format!(
-            "Failed to fetch Gaia index, status: {}",
-            response.status()
-        )));
-    }
+    let response = check_response_status(
+        client
+            .get(GAIA_DR1_BASE_URL)
+            .send()
+            .map_err(|e| StarfieldError::DataError(format!("Failed to fetch Gaia index: {}", e)))?,
+        "Gaia catalog index",
+    )?;
 
     let html = response
         .text()

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use starfield::Result;
 use starfield::StarfieldError;
-use starfield_datasource_utils::build_http_client;
+use starfield_datasource_utils::{build_http_client, check_response_status};
 
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -58,18 +58,13 @@ fn download_file<P: AsRef<Path>>(url: &str, path: P) -> Result<()> {
     let client = build_http_client(30)?;
 
     // Make the request
-    let mut response = client
-        .get(url)
-        .send()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to download file: {}", e)))?;
-
-    // Check if the request was successful
-    if !response.status().is_success() {
-        return Err(StarfieldError::DataError(format!(
-            "Failed to download file, status: {}",
-            response.status()
-        )));
-    }
+    let mut response = check_response_status(
+        client
+            .get(url)
+            .send()
+            .map_err(|e| StarfieldError::DataError(format!("Failed to download file: {}", e)))?,
+        url,
+    )?;
 
     // Copy the response body to the file
     let mut buffer = [0; 8192];
@@ -187,18 +182,13 @@ pub fn download_file_with_progress<P: AsRef<Path>>(url: &str, path: P) -> Result
 
     let client = build_http_client(600)?;
 
-    let response = client
-        .get(url)
-        .send()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to download {}: {}", url, e)))?;
-
-    if !response.status().is_success() {
-        return Err(StarfieldError::DataError(format!(
-            "Download failed for {}: HTTP {}",
-            url,
-            response.status()
-        )));
-    }
+    let response = check_response_status(
+        client
+            .get(url)
+            .send()
+            .map_err(|e| StarfieldError::DataError(format!("Failed to download {}: {}", url, e)))?,
+        url,
+    )?;
 
     let total_size = response.content_length().unwrap_or(0);
     let pb = if total_size > 0 {
