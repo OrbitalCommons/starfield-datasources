@@ -1,19 +1,20 @@
 [package]
 name = "starfield-datasources"
-version = "0.2.0"
+version = "0.3.0"
 description = "Astronomical data source clients for the starfield ecosystem"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["horizons", "sbdb", "gaia", "hipparcos", "jplephem", "mpc"]
+default = ["horizons", "sbdb", "gaia", "hipparcos", "jplephem", "mpc", "rubin"]
 horizons = ["dep:starfield-horizons"]
 sbdb = ["dep:starfield-sbdb"]
 gaia = ["dep:starfield-gaia"]
 hipparcos = ["dep:starfield-hipparcos"]
 jplephem = ["dep:starfield-jplephem"]
 mpc = ["dep:starfield-mpc"]
+rubin = ["dep:starfield-rubin"]
 
 [dependencies]
 starfield-jplephem = { path = "../jplephem", optional = true }
@@ -22,3 +23,4 @@ starfield-sbdb = { path = "../sbdb", optional = true }
 starfield-gaia = { path = "../gaia", optional = true }
 starfield-hipparcos = { path = "../hipparcos", optional = true }
 starfield-mpc = { path = "../mpc", optional = true }
+starfield-rubin = { path = "../rubin", optional = true }

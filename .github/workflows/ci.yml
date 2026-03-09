@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "meawoppl/**"]
+  pull_request:
+    branches: ["main", "meawoppl/**"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check
+        run: cargo check --workspace --all-features
+
+      - name: Run tests
+        run: cargo test --workspace
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  url-verification:
+    name: Verify Broker URLs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify all broker URLs resolve
+        run: cargo test -p starfield-rubin --test url_verification -- --ignored

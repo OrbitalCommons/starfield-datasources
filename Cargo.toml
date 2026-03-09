@@ -8,6 +8,7 @@ members = [
     "crates/gaia",
     "crates/hipparcos",
     "crates/mpc",
+    "crates/rubin",
     "crates/starfield-datasources",
 ]
 
