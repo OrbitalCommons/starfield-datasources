@@ -4,6 +4,22 @@
 //! Ephemerides (DE) files, which contain position and velocity data for solar
 //! system bodies stored as Chebyshev polynomial coefficients in SPICE SPK format.
 //!
+//! # Supported Ephemerides
+//!
+//! Any SPK/BSP file using data types 2 (Chebyshev position), 3 (Chebyshev
+//! position + velocity), or 21 (Modified Difference Array) is supported.
+//! This includes all standard JPL planetary ephemerides:
+//!
+//! | Ephemeris | Time Span | Size | Notes |
+//! |-----------|-----------|------|-------|
+//! | DE405 | 1599–2201 | ~55 MB | Legacy, widely used |
+//! | DE421 | 1900–2050 | ~17 MB | Compact, good for near-term work |
+//! | DE430t | 1550–2650 | ~115 MB | Truncated DE430 |
+//! | DE440 | 1550–2650 | ~114 MB | Current standard, fits to modern data |
+//! | DE441 | −13200–17191 | ~3.1 GB | Extended time span for deep-past/future |
+//!
+//! NAIF satellite kernels (e.g. `jup365.bsp`) are also supported.
+//!
 //! # Main Components
 //!
 //! - [`daf`] - Double Array File format reader (underlying binary container)

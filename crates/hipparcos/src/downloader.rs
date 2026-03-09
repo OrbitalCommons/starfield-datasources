@@ -402,7 +402,14 @@ mod tests {
     /// This catches broken URLs in CI without streaming large files.
     #[test]
     fn test_known_endpoints_reachable() {
-        let filenames = ["de421.bsp", "de405.bsp", "de430t.bsp", "jup365.bsp"];
+        let filenames = [
+            "de421.bsp",
+            "de405.bsp",
+            "de430t.bsp",
+            "de440.bsp",
+            "de441.bsp",
+            "jup365.bsp",
+        ];
 
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(15))
