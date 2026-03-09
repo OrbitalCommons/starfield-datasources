@@ -31,6 +31,32 @@ pub fn check_response_status(
     )))
 }
 
+/// Assert that an HTTP endpoint responds to a HEAD request.
+///
+/// Accepts 2xx or 405 (Method Not Allowed — means the server is up but
+/// rejects HEAD). Panics with a descriptive message on connection failure
+/// or unexpected status codes.
+///
+/// Intended for `#[ignore]` integration tests that verify upstream URLs.
+pub fn assert_endpoint_reachable(url: &str) {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .expect("Failed to build HTTP client");
+
+    let resp = client
+        .head(url)
+        .send()
+        .unwrap_or_else(|e| panic!("HEAD request failed for {}: {}", url, e));
+
+    assert!(
+        resp.status().is_success() || resp.status().as_u16() == 405,
+        "Endpoint {} returned HTTP {}",
+        url,
+        resp.status()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

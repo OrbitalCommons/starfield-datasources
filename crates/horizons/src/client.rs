@@ -1146,6 +1146,7 @@ fn extract_error_message(result: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use starfield_datasource_utils::assert_endpoint_reachable;
 
     #[test]
     fn test_command_major_body() {
@@ -1633,23 +1634,13 @@ mod tests {
     #[test]
     #[ignore]
     fn test_horizons_api_reachable() {
-        let client = reqwest::blocking::Client::new();
-        let resp = client
-            .head(HORIZONS_API_URL)
-            .send()
-            .expect("HORIZONS API unreachable");
-        assert!(resp.status().is_success() || resp.status().as_u16() == 405);
+        assert_endpoint_reachable(HORIZONS_API_URL);
     }
 
     #[test]
     #[ignore]
     fn test_lookup_api_reachable() {
-        let client = reqwest::blocking::Client::new();
-        let resp = client
-            .head(HORIZONS_LOOKUP_URL)
-            .send()
-            .expect("HORIZONS lookup API unreachable");
-        assert!(resp.status().is_success() || resp.status().as_u16() == 405);
+        assert_endpoint_reachable(HORIZONS_LOOKUP_URL);
     }
 
     #[test]
