@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 starfield = { workspace = true }
 reqwest = { workspace = true }
+indicatif.workspace = true
 
 [dev-dependencies]
 tempfile = "3.26.0"
