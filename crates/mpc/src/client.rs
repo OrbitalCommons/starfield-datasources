@@ -6,6 +6,7 @@ use std::io::Read;
 use std::time::{Duration, Instant};
 
 use starfield::{Result, StarfieldError};
+use starfield_datasource_utils::build_http_client;
 
 use crate::mpcorb::{parse_mpcorb, MpcOrbRecord};
 use crate::observatory::{parse_observatory_codes, Observatory};
@@ -25,12 +26,7 @@ pub struct MpcClient {
 impl MpcClient {
     /// Create a new MPC client with default settings
     pub fn new() -> Result<Self> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(120))
-            .build()
-            .map_err(|e| {
-                StarfieldError::DataError(format!("Failed to create HTTP client: {}", e))
-            })?;
+        let client = build_http_client(120)?;
         Ok(Self {
             client,
             last_request: None,

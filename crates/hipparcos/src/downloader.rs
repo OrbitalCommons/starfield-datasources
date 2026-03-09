@@ -6,10 +6,10 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use starfield::Result;
 use starfield::StarfieldError;
+use starfield_datasource_utils::build_http_client;
 
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -55,11 +55,7 @@ fn download_file<P: AsRef<Path>>(url: &str, path: P) -> Result<()> {
     let temp_path = path.as_ref().with_extension("tmp");
     let mut file = BufWriter::new(File::create(&temp_path).map_err(StarfieldError::IoError)?);
 
-    // Create HTTP client with timeout
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to create HTTP client: {}", e)))?;
+    let client = build_http_client(30)?;
 
     // Make the request
     let mut response = client
@@ -189,10 +185,7 @@ pub fn download_file_with_progress<P: AsRef<Path>>(url: &str, path: P) -> Result
     let temp_path = path.as_ref().with_extension("tmp");
     let mut file = BufWriter::new(File::create(&temp_path).map_err(StarfieldError::IoError)?);
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(600))
-        .build()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to create HTTP client: {}", e)))?;
+    let client = build_http_client(600)?;
 
     let response = client
         .get(url)
@@ -411,10 +404,7 @@ mod tests {
             "jup365.bsp",
         ];
 
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .expect("Failed to build HTTP client");
+        let client = build_http_client(15).expect("Failed to build HTTP client");
 
         for filename in filenames {
             let url = resolve_url(filename).expect("resolve_url returned None");

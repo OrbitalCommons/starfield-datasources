@@ -9,6 +9,7 @@
 use crate::types::*;
 use serde_json::Value;
 use starfield::{Result, StarfieldError};
+use starfield_datasource_utils::build_http_client;
 use std::collections::HashMap;
 
 const SBDB_API_URL: &str = "https://ssd-api.jpl.nasa.gov/sbdb.api";
@@ -31,12 +32,7 @@ pub struct SbdbClient {
 impl SbdbClient {
     /// Create a new SBDB API client
     pub fn new() -> Result<Self> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| {
-                StarfieldError::DataError(format!("Failed to create HTTP client: {}", e))
-            })?;
+        let client = build_http_client(30)?;
         Ok(Self { client })
     }
 
