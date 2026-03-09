@@ -5,4 +5,4 @@
 
 pub mod http;
 
-pub use http::build_http_client;
+pub use http::{build_http_client, check_response_status};

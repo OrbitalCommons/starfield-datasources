@@ -15,6 +15,22 @@ pub fn build_http_client(timeout_secs: u64) -> Result<reqwest::blocking::Client>
         .map_err(|e| StarfieldError::DataError(format!("Failed to create HTTP client: {}", e)))
 }
 
+/// Check that an HTTP response has a success status, returning a descriptive
+/// error that includes `context` (typically the service or URL) on failure.
+pub fn check_response_status(
+    response: reqwest::blocking::Response,
+    context: &str,
+) -> Result<reqwest::blocking::Response> {
+    if response.status().is_success() {
+        return Ok(response);
+    }
+    Err(StarfieldError::DataError(format!(
+        "{} returned HTTP {}",
+        context,
+        response.status()
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

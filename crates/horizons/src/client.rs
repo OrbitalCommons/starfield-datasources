@@ -9,7 +9,7 @@
 use base64::Engine;
 use serde::Deserialize;
 use starfield::{Result, StarfieldError};
-use starfield_datasource_utils::build_http_client;
+use starfield_datasource_utils::{build_http_client, check_response_status};
 use starfield_jplephem::SpiceKernel;
 use std::collections::HashMap;
 use std::path::Path;
@@ -955,19 +955,16 @@ impl HorizonsClient {
     /// Execute an ephemeris query and return the raw response
     pub fn query(&self, request: &EphemerisRequest) -> Result<HorizonsResponse> {
         let params = request.to_query_params();
-        let response = self
-            .client
-            .get(HORIZONS_API_URL)
-            .query(&params)
-            .send()
-            .map_err(|e| StarfieldError::DataError(format!("HORIZONS request failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(StarfieldError::DataError(format!(
-                "HORIZONS API returned HTTP {}",
-                response.status()
-            )));
-        }
+        let response = check_response_status(
+            self.client
+                .get(HORIZONS_API_URL)
+                .query(&params)
+                .send()
+                .map_err(|e| {
+                    StarfieldError::DataError(format!("HORIZONS request failed: {}", e))
+                })?,
+            "HORIZONS API",
+        )?;
 
         let body: HorizonsResponse = response.json().map_err(|e| {
             StarfieldError::DataError(format!("Failed to parse HORIZONS response: {}", e))
@@ -1001,21 +998,16 @@ impl HorizonsClient {
             .text("input", input_file)
             .text("format", "json");
 
-        let response = self
-            .client
-            .post(HORIZONS_FILE_API_URL)
-            .multipart(form)
-            .send()
-            .map_err(|e| {
-                StarfieldError::DataError(format!("HORIZONS file request failed: {}", e))
-            })?;
-
-        if !response.status().is_success() {
-            return Err(StarfieldError::DataError(format!(
-                "HORIZONS File API returned HTTP {}",
-                response.status()
-            )));
-        }
+        let response = check_response_status(
+            self.client
+                .post(HORIZONS_FILE_API_URL)
+                .multipart(form)
+                .send()
+                .map_err(|e| {
+                    StarfieldError::DataError(format!("HORIZONS file request failed: {}", e))
+                })?,
+            "HORIZONS File API",
+        )?;
 
         let body: HorizonsResponse = response.json().map_err(|e| {
             StarfieldError::DataError(format!("Failed to parse HORIZONS file response: {}", e))
@@ -1060,19 +1052,14 @@ impl HorizonsClient {
             params.insert("group", g.as_str().to_string());
         }
 
-        let response = self
-            .client
-            .get(HORIZONS_LOOKUP_URL)
-            .query(&params)
-            .send()
-            .map_err(|e| StarfieldError::DataError(format!("HORIZONS lookup failed: {}", e)))?;
-
-        if !response.status().is_success() {
-            return Err(StarfieldError::DataError(format!(
-                "HORIZONS lookup API returned HTTP {}",
-                response.status()
-            )));
-        }
+        let response = check_response_status(
+            self.client
+                .get(HORIZONS_LOOKUP_URL)
+                .query(&params)
+                .send()
+                .map_err(|e| StarfieldError::DataError(format!("HORIZONS lookup failed: {}", e)))?,
+            "HORIZONS lookup API",
+        )?;
 
         let body: LookupResponse = response.json().map_err(|e| {
             StarfieldError::DataError(format!("Failed to parse lookup response: {}", e))
