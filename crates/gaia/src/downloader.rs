@@ -3,15 +3,15 @@
 //! This module provides functionality for downloading and caching Gaia catalog files.
 
 use std::collections::HashMap;
-use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-// No need for sync primitives yet
 
 use regex::Regex;
 use starfield::{Result, StarfieldError};
-use starfield_datasource_utils::{build_http_client, check_response_status};
+use starfield_datasource_utils::{
+    build_http_client, check_response_status, ensure_cache_subdir, file_exists_and_not_empty,
+};
 
 // Base URL for Gaia DR1 catalog
 const GAIA_DR1_BASE_URL: &str = "https://cdn.gea.esac.esa.int/Gaia/gdr1/gaia_source/csv/";
@@ -20,26 +20,12 @@ const GAIA_MD5SUMS_URL: &str = "https://cdn.gea.esac.esa.int/Gaia/gdr1/gaia_sour
 
 /// Get the Gaia cache directory path
 pub fn get_gaia_cache_dir() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join(".cache")
-        .join("starfield")
-        .join("gaia")
+    starfield_datasource_utils::cache_dir().join("gaia")
 }
 
 /// Ensure that the Gaia cache directory exists
 pub fn ensure_gaia_cache_dir() -> io::Result<PathBuf> {
-    let cache_dir = get_gaia_cache_dir();
-    fs::create_dir_all(&cache_dir)?;
-    Ok(cache_dir)
-}
-
-/// Check if a file exists and is not empty
-fn file_exists_and_not_empty<P: AsRef<Path>>(path: P) -> bool {
-    match fs::metadata(path) {
-        Ok(metadata) => metadata.is_file() && metadata.len() > 0,
-        Err(_) => false,
-    }
+    ensure_cache_subdir("gaia")
 }
 
 /// Download a file from URL to a local path
