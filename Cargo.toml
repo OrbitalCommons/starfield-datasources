@@ -6,6 +6,7 @@ members = [
     "crates/sbdb",
     "crates/gaia",
     "crates/hipparcos",
+    "crates/mpc",
     "crates/starfield-datasources",
 ]
 
