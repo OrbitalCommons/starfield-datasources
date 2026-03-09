@@ -25,7 +25,6 @@ pub fn get_cache_dir() -> PathBuf {
     starfield_datasource_utils::cache_dir()
 }
 
-
 /// Decompress a gzipped file
 /// Currently unused as we're using synthetic data, but kept for future reference
 #[allow(dead_code)]
@@ -102,7 +101,6 @@ pub fn resolve_url(filename: &str) -> Option<String> {
 
     None
 }
-
 
 /// Ensure a data file is available locally, downloading it if necessary.
 ///
@@ -191,7 +189,7 @@ pub fn download_hipparcos() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use starfield_datasource_utils::build_http_client;
+    use starfield_datasource_utils::assert_endpoint_reachable;
 
     #[test]
     fn test_cache_dir() {
@@ -261,21 +259,9 @@ mod tests {
             "jup365.bsp",
         ];
 
-        let client = build_http_client(15).expect("Failed to build HTTP client");
-
         for filename in filenames {
             let url = resolve_url(filename).expect("resolve_url returned None");
-            let response = client
-                .head(&url)
-                .send()
-                .unwrap_or_else(|e| panic!("HEAD request failed for {}: {}", url, e));
-
-            assert!(
-                response.status().is_success(),
-                "Endpoint {} returned HTTP {}",
-                url,
-                response.status()
-            );
+            assert_endpoint_reachable(&url);
         }
     }
 }
