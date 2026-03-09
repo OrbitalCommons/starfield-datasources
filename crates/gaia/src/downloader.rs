@@ -7,11 +7,11 @@ use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 // No need for sync primitives yet
 
 use regex::Regex;
 use starfield::{Result, StarfieldError};
+use starfield_datasource_utils::build_http_client;
 
 // Base URL for Gaia DR1 catalog
 const GAIA_DR1_BASE_URL: &str = "https://cdn.gea.esac.esa.int/Gaia/gdr1/gaia_source/csv/";
@@ -53,11 +53,7 @@ fn download_file<P: AsRef<Path>>(url: &str, path: P) -> Result<()> {
     let temp_path = path.as_ref().with_extension("tmp");
     let mut file = BufWriter::new(File::create(&temp_path).map_err(StarfieldError::IoError)?);
 
-    // Create HTTP client with timeout
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(600)) // 10 minute timeout for large files
-        .build()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to create HTTP client: {}", e)))?;
+    let client = build_http_client(600)?;
 
     println!("Downloading: {}", url);
 
@@ -201,11 +197,7 @@ fn download_md5sums() -> Result<HashMap<String, String>> {
 
 /// List all files in the Gaia DR1 catalog index
 fn list_gaia_files() -> Result<Vec<String>> {
-    // Get the index page containing the file list
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to create HTTP client: {}", e)))?;
+    let client = build_http_client(60)?;
 
     println!("Fetching Gaia catalog index...");
     let response = client

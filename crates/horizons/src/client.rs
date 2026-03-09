@@ -9,6 +9,7 @@
 use base64::Engine;
 use serde::Deserialize;
 use starfield::{Result, StarfieldError};
+use starfield_datasource_utils::build_http_client;
 use starfield_jplephem::SpiceKernel;
 use std::collections::HashMap;
 use std::path::Path;
@@ -947,12 +948,7 @@ pub struct HorizonsClient {
 impl HorizonsClient {
     /// Create a new HORIZONS API client
     pub fn new() -> Result<Self> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .map_err(|e| {
-                StarfieldError::DataError(format!("Failed to create HTTP client: {}", e))
-            })?;
+        let client = build_http_client(60)?;
         Ok(Self { client })
     }
 
