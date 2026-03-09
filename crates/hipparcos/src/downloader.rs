@@ -2,14 +2,15 @@
 //!
 //! This module handles downloading and caching of astronomical data files.
 
-use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
 use starfield::Result;
 use starfield::StarfieldError;
-use starfield_datasource_utils::{build_http_client, check_response_status};
+use starfield_datasource_utils::{
+    build_http_client, check_response_status, ensure_cache_dir, file_exists_and_not_empty,
+};
 
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -25,23 +26,7 @@ const NAIF_SATELLITES_URL: &str =
 
 /// Get the cache directory path
 pub fn get_cache_dir() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".cache").join("starfield")
-}
-
-/// Ensure that the cache directory exists
-pub fn ensure_cache_dir() -> io::Result<PathBuf> {
-    let cache_dir = get_cache_dir();
-    fs::create_dir_all(&cache_dir)?;
-    Ok(cache_dir)
-}
-
-/// Check if a file exists and is not empty
-pub(crate) fn file_exists_and_not_empty<P: AsRef<Path>>(path: P) -> bool {
-    match fs::metadata(path) {
-        Ok(metadata) => metadata.is_file() && metadata.len() > 0,
-        Err(_) => false,
-    }
+    starfield_datasource_utils::cache_dir()
 }
 
 /// Download a file from URL to a local path
