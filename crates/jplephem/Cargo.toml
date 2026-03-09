@@ -17,3 +17,5 @@ base64 = { workspace = true }
 
 [dev-dependencies]
 approx = "0.5"
+reqwest = { workspace = true, features = ["blocking"] }
+tempfile = "3.26.0"
