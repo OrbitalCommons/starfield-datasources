@@ -173,9 +173,14 @@ mod tests {
     use super::*;
     use crate::mpcorb::parse_mpcorb_line;
 
+    // Main belt — low ecc, low-to-moderate inclination
     const CERES_LINE: &str = "00001    3.35  0.15 K25BL 231.53975   73.29974   80.24963   10.58789  0.0795763  0.21429712   2.7656157  0 MPO964264  7384 126 1801-2026 0.69 M-v 30k MPCORBFIT  4000      (1) Ceres              20260103";
     const PALLAS_LINE: &str = "00002    4.11  0.15 K25BL 211.52977  310.93340  172.88859   34.92833  0.2306430  0.21379713   2.7699258  0 MPO964264  9023 124 1804-2025 0.64 M-c 28k MPCORBFIT  4000      (2) Pallas             20251214";
     const VESTA_LINE: &str = "00004    3.25  0.15 K25BL  26.80969  151.53711  103.70232    7.14406  0.0901676  0.27158812   2.3615413  0 MPO964264  7603 112 1821-2025 0.69 M-p 18k MPCORBFIT  4000      (4) Vesta              20250624";
+    // NEA, very high eccentricity (e=0.827)
+    const ICARUS_LINE: &str = "01566   16.53  0.15 K25BL 153.07893   31.43821   87.95243   22.80320  0.8270057  0.88054806   1.0780378  0 MPO950970  1842  43 1949-2025 0.63 M-v 3Ek MPCLINUX   9803   (1566) Icarus             20250818";
+    // NEA, high inclination (i=64.0°)
+    const TANTALUS_LINE: &str = "02102   16.00  0.15 K25BL 347.35567   61.49853   94.35226   64.00516  0.2993501  0.67264934   1.2900610  0 MPO964302  1837  25 1975-2025 0.62 M-v 3Ek MPCORBFIT  9803   (2102) Tantalus           20251209";
 
     fn ts() -> Timescale {
         Timescale::default()
@@ -425,6 +430,119 @@ mod tests {
         assert!(
             (pos.position.z - horizons_z).abs() < tol,
             "Pallas Z: got {}, expected {}, diff={}",
+            pos.position.z,
+            horizons_z,
+            (pos.position.z - horizons_z).abs()
+        );
+    }
+
+    /// Icarus: NEA with e=0.827 — exercises highly eccentric orbit propagation.
+    /// Perihelion ~0.19 AU, aphelion ~1.97 AU.
+    #[test]
+    fn test_icarus_heliocentric_distance() {
+        let ts = ts();
+        let rec = parse_mpcorb_line(ICARUS_LINE).unwrap();
+        let epoch = rec.epoch_time(&ts).unwrap();
+        let pos = rec.heliocentric_position(&ts, &epoch).unwrap();
+        let dist = pos.position.norm();
+        // a=1.078, e=0.827 → perihelion=0.186, aphelion=1.970
+        assert!(
+            dist > 0.15 && dist < 2.1,
+            "Icarus distance should be 0.19-1.97 AU, got {dist}"
+        );
+    }
+
+    /// Tantalus: NEA with i=64° — exercises high-inclination orbit.
+    #[test]
+    fn test_tantalus_heliocentric_distance() {
+        let ts = ts();
+        let rec = parse_mpcorb_line(TANTALUS_LINE).unwrap();
+        let epoch = rec.epoch_time(&ts).unwrap();
+        let pos = rec.heliocentric_position(&ts, &epoch).unwrap();
+        let dist = pos.position.norm();
+        // a=1.290, e=0.299 → perihelion=0.904, aphelion=1.676
+        assert!(
+            dist > 0.8 && dist < 1.8,
+            "Tantalus distance should be 0.9-1.7 AU, got {dist}"
+        );
+    }
+
+    /// Compare Icarus (e=0.827) on 2026-01-01 against HORIZONS.
+    ///
+    /// HORIZONS vectors query (JPL solution #194, DE441):
+    /// Target: 1566 Icarus  Center: Sun [500@10]  Frame: ICRF
+    /// JD 2461041.5 TDB = 2026-Jan-01 00:00:00.0000 TDB
+    #[test]
+    fn test_icarus_vs_horizons_2026_jan_01() {
+        let ts = ts();
+        let rec = parse_mpcorb_line(ICARUS_LINE).unwrap();
+        let t = ts.tt((2026, 1, 1));
+        let pos = rec.heliocentric_position(&ts, &t).unwrap();
+
+        let horizons_x = 0.9272316329869779;
+        let horizons_y = -1.379476203634930;
+        let horizons_z = -1.050260897170735;
+
+        // High-ecc orbit: two-body should still be close over 41 days,
+        // but perturbations may be larger near perihelion.
+        let tol = 0.01;
+        assert!(
+            (pos.position.x - horizons_x).abs() < tol,
+            "Icarus X: got {}, expected {}, diff={}",
+            pos.position.x,
+            horizons_x,
+            (pos.position.x - horizons_x).abs()
+        );
+        assert!(
+            (pos.position.y - horizons_y).abs() < tol,
+            "Icarus Y: got {}, expected {}, diff={}",
+            pos.position.y,
+            horizons_y,
+            (pos.position.y - horizons_y).abs()
+        );
+        assert!(
+            (pos.position.z - horizons_z).abs() < tol,
+            "Icarus Z: got {}, expected {}, diff={}",
+            pos.position.z,
+            horizons_z,
+            (pos.position.z - horizons_z).abs()
+        );
+    }
+
+    /// Compare Tantalus (i=64°) on 2026-01-01 against HORIZONS.
+    ///
+    /// HORIZONS vectors query (JPL solution #274, DE441):
+    /// Target: 2102 Tantalus  Center: Sun [500@10]  Frame: ICRF
+    /// JD 2461041.5 TDB = 2026-Jan-01 00:00:00.0000 TDB
+    #[test]
+    fn test_tantalus_vs_horizons_2026_jan_01() {
+        let ts = ts();
+        let rec = parse_mpcorb_line(TANTALUS_LINE).unwrap();
+        let t = ts.tt((2026, 1, 1));
+        let pos = rec.heliocentric_position(&ts, &t).unwrap();
+
+        let horizons_x = -0.4063748762567138;
+        let horizons_y = -0.3604771474080175;
+        let horizons_z = 0.7546149775701417;
+
+        let tol = 0.01;
+        assert!(
+            (pos.position.x - horizons_x).abs() < tol,
+            "Tantalus X: got {}, expected {}, diff={}",
+            pos.position.x,
+            horizons_x,
+            (pos.position.x - horizons_x).abs()
+        );
+        assert!(
+            (pos.position.y - horizons_y).abs() < tol,
+            "Tantalus Y: got {}, expected {}, diff={}",
+            pos.position.y,
+            horizons_y,
+            (pos.position.y - horizons_y).abs()
+        );
+        assert!(
+            (pos.position.z - horizons_z).abs() < tol,
+            "Tantalus Z: got {}, expected {}, diff={}",
             pos.position.z,
             horizons_z,
             (pos.position.z - horizons_z).abs()
