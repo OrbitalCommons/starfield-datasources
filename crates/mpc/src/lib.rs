@@ -21,11 +21,13 @@
 //! ```
 
 pub mod client;
+pub mod ephemeris;
 pub mod mpcorb;
 pub mod observation;
 pub mod observatory;
 
 pub use client::MpcClient;
+pub use ephemeris::hg_apparent_magnitude;
 pub use mpcorb::{parse_mpcorb, parse_mpcorb_line, unpack_epoch, MpcOrbRecord};
 pub use observation::{parse_observation_line, parse_observations, Observation};
 pub use observatory::{parse_observatory_codes, parse_observatory_line, Observatory};
