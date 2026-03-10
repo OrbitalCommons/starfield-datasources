@@ -14,3 +14,4 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 starfield-datasource-utils = { version = "0.1.0", path = "../datasource-utils" }
+nalgebra.workspace = true
