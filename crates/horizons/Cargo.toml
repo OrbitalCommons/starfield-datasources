@@ -8,7 +8,6 @@ repository.workspace = true
 
 [dependencies]
 starfield = { workspace = true }
-starfield-jplephem = { path = "../jplephem" }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
