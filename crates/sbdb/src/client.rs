@@ -9,6 +9,7 @@
 use crate::types::*;
 use serde_json::Value;
 use starfield::{Result, StarfieldError};
+use starfield_datasource_utils::{build_http_client, check_response_status};
 use std::collections::HashMap;
 
 const SBDB_API_URL: &str = "https://ssd-api.jpl.nasa.gov/sbdb.api";
@@ -31,12 +32,7 @@ pub struct SbdbClient {
 impl SbdbClient {
     /// Create a new SBDB API client
     pub fn new() -> Result<Self> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(|e| {
-                StarfieldError::DataError(format!("Failed to create HTTP client: {}", e))
-            })?;
+        let client = build_http_client(30)?;
         Ok(Self { client })
     }
 
@@ -238,19 +234,13 @@ impl SbdbClient {
             .send()
             .map_err(|e| StarfieldError::DataError(format!("SBDB request failed: {}", e)))?;
 
-        let status = response.status();
-        if status.as_u16() == 300 {
+        if response.status().as_u16() == 300 {
             return Err(StarfieldError::DataError(
                 "Ambiguous search: multiple objects matched. Try a more specific query."
                     .to_string(),
             ));
         }
-        if !status.is_success() {
-            return Err(StarfieldError::DataError(format!(
-                "SBDB API returned HTTP {}",
-                status
-            )));
-        }
+        let response = check_response_status(response, "SBDB API")?;
 
         response.json::<Value>().map_err(|e| {
             StarfieldError::DataError(format!("Failed to parse SBDB JSON response: {}", e))
@@ -1499,6 +1489,7 @@ fn parse_count(json: &Value) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use starfield_datasource_utils::assert_endpoint_reachable;
 
     #[test]
     fn test_cad_params_default() {
@@ -1949,23 +1940,13 @@ mod tests {
     #[test]
     #[ignore]
     fn test_sbdb_api_reachable() {
-        let client = reqwest::blocking::Client::new();
-        let resp = client
-            .head(SBDB_API_URL)
-            .send()
-            .expect("SBDB API unreachable");
-        assert!(resp.status().is_success() || resp.status().as_u16() == 405);
+        assert_endpoint_reachable(SBDB_API_URL);
     }
 
     #[test]
     #[ignore]
     fn test_cad_api_reachable() {
-        let client = reqwest::blocking::Client::new();
-        let resp = client
-            .head(CAD_API_URL)
-            .send()
-            .expect("CAD API unreachable");
-        assert!(resp.status().is_success() || resp.status().as_u16() == 405);
+        assert_endpoint_reachable(CAD_API_URL);
     }
 
     #[test]
@@ -2107,12 +2088,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_mdesign_api_reachable() {
-        let client = reqwest::blocking::Client::new();
-        let resp = client
-            .head(MDESIGN_API_URL)
-            .send()
-            .expect("Mission Design API unreachable");
-        assert!(resp.status().is_success() || resp.status().as_u16() == 405);
+        assert_endpoint_reachable(MDESIGN_API_URL);
     }
 
     #[test]
@@ -2220,12 +2196,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_radar_api_reachable() {
-        let client = reqwest::blocking::Client::new();
-        let resp = client
-            .head(RADAR_API_URL)
-            .send()
-            .expect("Radar API unreachable");
-        assert!(resp.status().is_success() || resp.status().as_u16() == 405);
+        assert_endpoint_reachable(RADAR_API_URL);
     }
 
     #[test]
@@ -2376,12 +2347,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_sb_ident_api_reachable() {
-        let client = reqwest::blocking::Client::new();
-        let resp = client
-            .head(SB_IDENT_API_URL)
-            .send()
-            .expect("SB Ident API unreachable");
-        assert!(resp.status().is_success() || resp.status().as_u16() == 405);
+        assert_endpoint_reachable(SB_IDENT_API_URL);
     }
 
     #[test]
@@ -2511,12 +2477,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_sbwobs_api_reachable() {
-        let client = reqwest::blocking::Client::new();
-        let resp = client
-            .head(SBWOBS_API_URL)
-            .send()
-            .expect("SBWOBS API unreachable");
-        assert!(resp.status().is_success() || resp.status().as_u16() == 405);
+        assert_endpoint_reachable(SBWOBS_API_URL);
     }
 
     #[test]
@@ -2655,12 +2616,7 @@ mod tests {
     #[test]
     #[ignore]
     fn test_nhats_api_reachable() {
-        let client = reqwest::blocking::Client::new();
-        let resp = client
-            .head(NHATS_API_URL)
-            .send()
-            .expect("NHATS API unreachable");
-        assert!(resp.status().is_success() || resp.status().as_u16() == 405);
+        assert_endpoint_reachable(NHATS_API_URL);
     }
 
     #[test]

@@ -1,12 +1,37 @@
 # Changelog
 
-## 0.2.0
+## 0.4.0
 
 ### Removed
 
 - Removed `starfield-jplephem` crate — jplephem has been reintegrated into the main `starfield` crate
 - `starfield-horizons` now uses `starfield::jplephem::SpiceKernel` directly
 - Removed `jplephem` feature flag from the `starfield-datasources` facade crate
+
+## 0.3.0 — Rubin Observatory Alert Brokers
+
+Added `starfield-rubin` crate with typed Rust clients for all seven Vera C. Rubin Observatory LSST community alert brokers.
+
+### Brokers
+
+| Broker | Auth | Module |
+|--------|------|--------|
+| ALeRCE | None | `alerce` |
+| ANTARES | None (search) | `antares` |
+| Fink | None | `fink` |
+| Lasair | API token | `lasair` |
+| Pitt-Google | GCP credentials | `pitt_google` |
+| AMPEL | Bearer token (archive) / None (catalog) | `ampel` |
+| Babamul | API token (invitation only) | `babamul` |
+
+### CI
+
+- Added GitHub Actions workflow with `cargo check`, `cargo test`, `cargo fmt --check`
+- Added URL verification job that checks all broker API and documentation URLs resolve
+
+### Other
+
+- Facade crate bumped to 0.3.0 with new `rubin` feature flag (enabled by default)
 
 ## 0.1.0 — Initial Release
 

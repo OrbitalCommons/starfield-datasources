@@ -3,15 +3,16 @@
 //! This module provides functionality for downloading and caching Gaia catalog files.
 
 use std::collections::HashMap;
-use std::env;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-// No need for sync primitives yet
 
 use regex::Regex;
 use starfield::{Result, StarfieldError};
+use starfield_datasource_utils::{
+    build_http_client, check_response_status, download_to_file, ensure_cache_subdir,
+    file_exists_and_not_empty,
+};
 
 // Base URL for Gaia DR1 catalog
 const GAIA_DR1_BASE_URL: &str = "https://cdn.gea.esac.esa.int/Gaia/gdr1/gaia_source/csv/";
@@ -20,136 +21,12 @@ const GAIA_MD5SUMS_URL: &str = "https://cdn.gea.esac.esa.int/Gaia/gdr1/gaia_sour
 
 /// Get the Gaia cache directory path
 pub fn get_gaia_cache_dir() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join(".cache")
-        .join("starfield")
-        .join("gaia")
+    starfield_datasource_utils::cache_dir().join("gaia")
 }
 
 /// Ensure that the Gaia cache directory exists
 pub fn ensure_gaia_cache_dir() -> io::Result<PathBuf> {
-    let cache_dir = get_gaia_cache_dir();
-    fs::create_dir_all(&cache_dir)?;
-    Ok(cache_dir)
-}
-
-/// Check if a file exists and is not empty
-fn file_exists_and_not_empty<P: AsRef<Path>>(path: P) -> bool {
-    match fs::metadata(path) {
-        Ok(metadata) => metadata.is_file() && metadata.len() > 0,
-        Err(_) => false,
-    }
-}
-
-/// Download a file from URL to a local path
-fn download_file<P: AsRef<Path>>(url: &str, path: P) -> Result<()> {
-    // Create parent directories if they don't exist
-    if let Some(parent) = path.as_ref().parent() {
-        fs::create_dir_all(parent).map_err(StarfieldError::IoError)?;
-    }
-
-    // Create a temporary file first to avoid partial downloads
-    let temp_path = path.as_ref().with_extension("tmp");
-    let mut file = BufWriter::new(File::create(&temp_path).map_err(StarfieldError::IoError)?);
-
-    // Create HTTP client with timeout
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(600)) // 10 minute timeout for large files
-        .build()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to create HTTP client: {}", e)))?;
-
-    println!("Downloading: {}", url);
-
-    // Make the request
-    let mut response = client
-        .get(url)
-        .send()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to download file: {}", e)))?;
-
-    // Check if the request was successful
-    if !response.status().is_success() {
-        return Err(StarfieldError::DataError(format!(
-            "Failed to download file, status: {}",
-            response.status()
-        )));
-    }
-
-    // Get file size for progress tracking
-    let total_size = response.content_length().unwrap_or(0);
-    let mut downloaded: u64 = 0;
-    let start_time = std::time::Instant::now();
-
-    // Copy the response body to the file with progress reporting
-    let mut buffer = [0; 8192];
-
-    loop {
-        match response.read(&mut buffer) {
-            Ok(0) => break, // EOF
-            Ok(n) => {
-                file.write_all(&buffer[..n])
-                    .map_err(StarfieldError::IoError)?;
-                downloaded += n as u64;
-
-                // Print progress every 5MB
-                if downloaded.is_multiple_of(5 * 1024 * 1024) {
-                    let elapsed = start_time.elapsed().as_secs_f64();
-                    let speed = if elapsed > 0.0 {
-                        downloaded as f64 / elapsed / 1024.0 / 1024.0
-                    } else {
-                        0.0
-                    };
-
-                    if total_size > 0 {
-                        let percentage = (downloaded as f64 / total_size as f64) * 100.0;
-                        print!(
-                            "\rDownloaded: {:.1}% ({:.1}MB/{:.1}MB) at {:.1} MB/s",
-                            percentage,
-                            downloaded as f64 / 1024.0 / 1024.0,
-                            total_size as f64 / 1024.0 / 1024.0,
-                            speed
-                        );
-                    } else {
-                        print!(
-                            "\rDownloaded: {:.1}MB at {:.1} MB/s",
-                            downloaded as f64 / 1024.0 / 1024.0,
-                            speed
-                        );
-                    }
-                    io::stdout().flush().unwrap();
-                }
-            }
-            Err(e) => {
-                return Err(StarfieldError::DataError(format!(
-                    "Error downloading file: {}",
-                    e
-                )))
-            }
-        }
-    }
-
-    // Final progress update
-    let elapsed = start_time.elapsed().as_secs_f64();
-    let speed = if elapsed > 0.0 {
-        downloaded as f64 / elapsed / 1024.0 / 1024.0
-    } else {
-        0.0
-    };
-    println!(
-        "\rDownload complete: {:.1}MB at {:.1} MB/s in {:.1}s",
-        downloaded as f64 / 1024.0 / 1024.0,
-        speed,
-        elapsed
-    );
-
-    // Flush and sync the file
-    file.flush().map_err(StarfieldError::IoError)?;
-    drop(file);
-
-    // Rename the temporary file to the final path
-    fs::rename(temp_path, path).map_err(StarfieldError::IoError)?;
-
-    Ok(())
+    ensure_cache_subdir("gaia")
 }
 
 /// Calculate MD5 checksum of a file
@@ -177,7 +54,7 @@ fn download_md5sums() -> Result<HashMap<String, String>> {
 
     // Download MD5SUMS file if it doesn't exist or is empty
     if !file_exists_and_not_empty(&md5sums_path) {
-        download_file(GAIA_MD5SUMS_URL, &md5sums_path)?;
+        download_to_file(GAIA_MD5SUMS_URL, &md5sums_path, 600)?;
     }
 
     // Parse MD5SUMS file
@@ -201,24 +78,16 @@ fn download_md5sums() -> Result<HashMap<String, String>> {
 
 /// List all files in the Gaia DR1 catalog index
 fn list_gaia_files() -> Result<Vec<String>> {
-    // Get the index page containing the file list
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to create HTTP client: {}", e)))?;
+    let client = build_http_client(60)?;
 
     println!("Fetching Gaia catalog index...");
-    let response = client
-        .get(GAIA_DR1_BASE_URL)
-        .send()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to fetch Gaia index: {}", e)))?;
-
-    if !response.status().is_success() {
-        return Err(StarfieldError::DataError(format!(
-            "Failed to fetch Gaia index, status: {}",
-            response.status()
-        )));
-    }
+    let response = check_response_status(
+        client
+            .get(GAIA_DR1_BASE_URL)
+            .send()
+            .map_err(|e| StarfieldError::DataError(format!("Failed to fetch Gaia index: {}", e)))?,
+        "Gaia catalog index",
+    )?;
 
     let html = response
         .text()
@@ -315,7 +184,7 @@ pub fn download_gaia_file(filename: &str) -> Result<PathBuf> {
     // Download the gzipped file if it doesn't exist
     if !file_exists_and_not_empty(&gz_path) {
         let file_url = format!("{}{}", GAIA_DR1_BASE_URL, filename);
-        download_file(&file_url, &gz_path)?;
+        download_to_file(&file_url, &gz_path, 600)?;
     }
 
     // Verify the file

@@ -2,16 +2,13 @@
 //!
 //! This module handles downloading and caching of astronomical data files.
 
-use std::env;
 use std::fs::{self, File};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use starfield::Result;
 use starfield::StarfieldError;
-
-use indicatif::{ProgressBar, ProgressStyle};
+use starfield_datasource_utils::{download_to_file, ensure_cache_dir, file_exists_and_not_empty};
 
 // Hipparcos catalog URL
 const HIPPARCOS_URL: &str = "https://cdsarc.cds.unistra.fr/ftp/cats/I/239/hip_main.dat";
@@ -25,79 +22,7 @@ const NAIF_SATELLITES_URL: &str =
 
 /// Get the cache directory path
 pub fn get_cache_dir() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".cache").join("starfield")
-}
-
-/// Ensure that the cache directory exists
-pub fn ensure_cache_dir() -> io::Result<PathBuf> {
-    let cache_dir = get_cache_dir();
-    fs::create_dir_all(&cache_dir)?;
-    Ok(cache_dir)
-}
-
-/// Check if a file exists and is not empty
-pub(crate) fn file_exists_and_not_empty<P: AsRef<Path>>(path: P) -> bool {
-    match fs::metadata(path) {
-        Ok(metadata) => metadata.is_file() && metadata.len() > 0,
-        Err(_) => false,
-    }
-}
-
-/// Download a file from URL to a local path
-fn download_file<P: AsRef<Path>>(url: &str, path: P) -> Result<()> {
-    // Create parent directories if they don't exist
-    if let Some(parent) = path.as_ref().parent() {
-        fs::create_dir_all(parent).map_err(StarfieldError::IoError)?;
-    }
-
-    // Create a temporary file first to avoid partial downloads
-    let temp_path = path.as_ref().with_extension("tmp");
-    let mut file = BufWriter::new(File::create(&temp_path).map_err(StarfieldError::IoError)?);
-
-    // Create HTTP client with timeout
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to create HTTP client: {}", e)))?;
-
-    // Make the request
-    let mut response = client
-        .get(url)
-        .send()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to download file: {}", e)))?;
-
-    // Check if the request was successful
-    if !response.status().is_success() {
-        return Err(StarfieldError::DataError(format!(
-            "Failed to download file, status: {}",
-            response.status()
-        )));
-    }
-
-    // Copy the response body to the file
-    let mut buffer = [0; 8192];
-    loop {
-        let bytes_read = response
-            .read(&mut buffer)
-            .map_err(|e| StarfieldError::DataError(format!("Failed to read response: {}", e)))?;
-
-        if bytes_read == 0 {
-            break;
-        }
-
-        file.write_all(&buffer[..bytes_read])
-            .map_err(StarfieldError::IoError)?;
-    }
-
-    // Flush and sync the file
-    file.flush().map_err(StarfieldError::IoError)?;
-    drop(file);
-
-    // Rename the temporary file to the final path
-    fs::rename(temp_path, path).map_err(StarfieldError::IoError)?;
-
-    Ok(())
+    starfield_datasource_utils::cache_dir()
 }
 
 /// Decompress a gzipped file
@@ -177,84 +102,6 @@ pub fn resolve_url(filename: &str) -> Option<String> {
     None
 }
 
-/// Download a file from URL to a local path, showing a progress bar.
-///
-/// Uses a longer timeout (600s) suitable for large ephemeris files.
-/// Downloads to a temporary file first, then atomically renames.
-pub fn download_file_with_progress<P: AsRef<Path>>(url: &str, path: P) -> Result<()> {
-    if let Some(parent) = path.as_ref().parent() {
-        fs::create_dir_all(parent).map_err(StarfieldError::IoError)?;
-    }
-
-    let temp_path = path.as_ref().with_extension("tmp");
-    let mut file = BufWriter::new(File::create(&temp_path).map_err(StarfieldError::IoError)?);
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(600))
-        .build()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to create HTTP client: {}", e)))?;
-
-    let response = client
-        .get(url)
-        .send()
-        .map_err(|e| StarfieldError::DataError(format!("Failed to download {}: {}", url, e)))?;
-
-    if !response.status().is_success() {
-        return Err(StarfieldError::DataError(format!(
-            "Download failed for {}: HTTP {}",
-            url,
-            response.status()
-        )));
-    }
-
-    let total_size = response.content_length().unwrap_or(0);
-    let pb = if total_size > 0 {
-        let pb = ProgressBar::new(total_size);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{bar:40}] {percent}% {bytes}/{total_bytes} ({bytes_per_sec})")
-                .unwrap()
-                .progress_chars("##-"),
-        );
-        Some(pb)
-    } else {
-        None
-    };
-
-    let mut reader = io::BufReader::new(response);
-    let mut downloaded: u64 = 0;
-    let mut buffer = [0u8; 131_072]; // 128KB chunks
-
-    loop {
-        let bytes_read = reader
-            .read(&mut buffer)
-            .map_err(|e| StarfieldError::DataError(format!("Failed to read response: {}", e)))?;
-
-        if bytes_read == 0 {
-            break;
-        }
-
-        file.write_all(&buffer[..bytes_read])
-            .map_err(StarfieldError::IoError)?;
-
-        downloaded += bytes_read as u64;
-        if let Some(ref pb) = pb {
-            pb.set_position(downloaded);
-        }
-    }
-
-    if let Some(ref pb) = pb {
-        pb.finish_and_clear();
-    }
-
-    file.flush().map_err(StarfieldError::IoError)?;
-    drop(file);
-
-    fs::rename(temp_path, path).map_err(StarfieldError::IoError)?;
-
-    Ok(())
-}
-
 /// Ensure a data file is available locally, downloading it if necessary.
 ///
 /// Checks `data_dir` (or the default cache `~/.cache/starfield/`) for the file.
@@ -283,7 +130,7 @@ pub fn download_or_cache(filename: &str, data_dir: Option<&Path>) -> Result<Path
     })?;
 
     eprintln!("Downloading {} ...", url);
-    download_file_with_progress(&url, &local_path)?;
+    download_to_file(&url, &local_path, 600)?;
     eprintln!("Saved to {}", local_path.display());
 
     Ok(local_path)
@@ -321,7 +168,7 @@ pub fn download_hipparcos() -> Result<PathBuf> {
     println!("This may take a moment as the catalog is approximately 36MB");
 
     // Attempt to download the file
-    match download_file(HIPPARCOS_URL, &dat_path) {
+    match download_to_file(HIPPARCOS_URL, &dat_path, 30) {
         Ok(_) => {
             println!(
                 "Hipparcos catalog downloaded successfully to {}",
@@ -342,6 +189,7 @@ pub fn download_hipparcos() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use starfield_datasource_utils::assert_endpoint_reachable;
 
     #[test]
     fn test_cache_dir() {
@@ -402,26 +250,18 @@ mod tests {
     /// This catches broken URLs in CI without streaming large files.
     #[test]
     fn test_known_endpoints_reachable() {
-        let filenames = ["de421.bsp", "de405.bsp", "de430t.bsp", "jup365.bsp"];
-
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .expect("Failed to build HTTP client");
+        let filenames = [
+            "de421.bsp",
+            "de405.bsp",
+            "de430t.bsp",
+            "de440.bsp",
+            "de441.bsp",
+            "jup365.bsp",
+        ];
 
         for filename in filenames {
             let url = resolve_url(filename).expect("resolve_url returned None");
-            let response = client
-                .head(&url)
-                .send()
-                .unwrap_or_else(|e| panic!("HEAD request failed for {}: {}", url, e));
-
-            assert!(
-                response.status().is_success(),
-                "Endpoint {} returned HTTP {}",
-                url,
-                response.status()
-            );
+            assert_endpoint_reachable(&url);
         }
     }
 }

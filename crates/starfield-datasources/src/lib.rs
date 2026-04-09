@@ -9,6 +9,8 @@
 //! - `sbdb` — NASA JPL Small-Body Database API client
 //! - `gaia` — ESA Gaia star catalog loader
 //! - `hipparcos` — Hipparcos star catalog loader
+//! - `mpc` — Minor Planet Center client (MPCORB, observatory codes, observations)
+//! - `rubin` — Vera C. Rubin Observatory LSST alert broker clients
 
 #[cfg(feature = "horizons")]
 pub use starfield_horizons as horizons;
@@ -21,3 +23,9 @@ pub use starfield_gaia as gaia;
 
 #[cfg(feature = "hipparcos")]
 pub use starfield_hipparcos as hipparcos;
+
+#[cfg(feature = "mpc")]
+pub use starfield_mpc as mpc;
+
+#[cfg(feature = "rubin")]
+pub use starfield_rubin as rubin;

@@ -1,10 +1,13 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/datasource-utils",
     "crates/horizons",
     "crates/sbdb",
     "crates/gaia",
     "crates/hipparcos",
+    "crates/mpc",
+    "crates/rubin",
     "crates/starfield-datasources",
 ]
 
@@ -21,6 +24,7 @@ serde_json = "1.0"
 thiserror = "1.0"
 base64 = "0.22.1"
 nalgebra = "0.32"
+log = "0.4"
 flate2 = "1.0"
 md5 = "0.7"
 regex = "1.10"
