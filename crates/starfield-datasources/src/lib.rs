@@ -5,14 +5,10 @@
 //!
 //! # Feature flags
 //!
-//! - `jplephem` — JPL Development Ephemeris reader (SPK/DAF)
 //! - `horizons` — NASA JPL HORIZONS API client
 //! - `sbdb` — NASA JPL Small-Body Database API client
 //! - `gaia` — ESA Gaia star catalog loader
 //! - `hipparcos` — Hipparcos star catalog loader
-
-#[cfg(feature = "jplephem")]
-pub use starfield_jplephem as jplephem;
 
 #[cfg(feature = "horizons")]
 pub use starfield_horizons as horizons;

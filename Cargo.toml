@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/jplephem",
     "crates/horizons",
     "crates/sbdb",
     "crates/gaia",
@@ -22,10 +21,6 @@ serde_json = "1.0"
 thiserror = "1.0"
 base64 = "0.22.1"
 nalgebra = "0.32"
-byteorder = "1.5"
-memmap2 = "0.9"
-lazy_static = "1.4"
-log = "0.4"
 flate2 = "1.0"
 md5 = "0.7"
 regex = "1.10"

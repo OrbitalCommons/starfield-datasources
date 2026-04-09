@@ -8,8 +8,8 @@
 
 use base64::Engine;
 use serde::Deserialize;
+use starfield::jplephem::SpiceKernel;
 use starfield::{Result, StarfieldError};
-use starfield_jplephem::SpiceKernel;
 use std::collections::HashMap;
 use std::path::Path;
 
