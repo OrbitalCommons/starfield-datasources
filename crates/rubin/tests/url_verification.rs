@@ -2,26 +2,74 @@
 //!
 //! These tests are marked `#[ignore]` because they require network access.
 //! Run with: `cargo test -p starfield-rubin --test url_verification -- --ignored`
+//!
+//! Behavior: each URL is probed with a HEAD request. Any HTTP response (including
+//! 403/404/405) proves the server is up and the URL resolves. Results are bucketed:
+//!
+//! - `Ok` — accepted as a pass.
+//! - `TlsFailure` (e.g. expired certificate on the remote host) — logged as a warning.
+//!   This is an operational issue on the *broker's* side, not a URL-correctness
+//!   issue our test is designed to catch, so we don't fail CI for it. A warning
+//!   still surfaces it in logs.
+//! - `Unreachable` (DNS, connection refused, timeout) — hard failure. Most likely
+//!   means the broker moved/renamed their endpoint, or we mistyped a URL.
 
-use starfield_datasource_utils::assert_endpoint_reachable;
+use starfield_datasource_utils::{check_endpoint_status, EndpointStatus};
 use starfield_rubin::*;
+
+fn check_all<'a>(urls: impl IntoIterator<Item = (&'a str, &'a str)>, kind: &str) {
+    let mut unreachable: Vec<String> = Vec::new();
+    let mut tls_warnings: Vec<String> = Vec::new();
+
+    for (name, url) in urls {
+        println!("Checking {}: {} -> {}", kind, name, url);
+        match check_endpoint_status(url) {
+            EndpointStatus::Ok => {}
+            EndpointStatus::TlsFailure(msg) => {
+                eprintln!(
+                    "  WARN  TLS issue at {} ({}): {} — not failing CI, remote \
+                     operational issue",
+                    name, url, msg
+                );
+                tls_warnings.push(format!("{} ({}): {}", name, url, msg));
+            }
+            EndpointStatus::Unreachable(msg) => {
+                eprintln!("  FAIL  unreachable at {} ({}): {}", name, url, msg);
+                unreachable.push(format!("{} ({}): {}", name, url, msg));
+            }
+        }
+    }
+
+    if !tls_warnings.is_empty() {
+        eprintln!(
+            "\n{} {} URL(s) had TLS issues (treated as warnings):",
+            tls_warnings.len(),
+            kind
+        );
+        for w in &tls_warnings {
+            eprintln!("  - {}", w);
+        }
+    }
+
+    assert!(
+        unreachable.is_empty(),
+        "{} {} URL(s) are unreachable:\n  - {}",
+        unreachable.len(),
+        kind,
+        unreachable.join("\n  - "),
+    );
+}
 
 #[test]
 #[ignore]
 fn test_all_broker_api_urls_reachable() {
-    for (name, url) in all_broker_api_urls() {
-        println!("Checking API: {} -> {}", name, url);
-        assert_endpoint_reachable(url);
-    }
+    check_all(all_broker_api_urls(), "API");
 }
 
 #[test]
 #[ignore]
 fn test_all_broker_doc_urls_reachable() {
-    for (name, url) in all_broker_doc_urls() {
-        println!("Checking docs: {} -> {}", name, url);
-        assert_endpoint_reachable(url);
-    }
+    check_all(all_broker_doc_urls(), "docs");
 }
 
 #[test]

@@ -38,15 +38,86 @@ pub fn check_response_status(
 ///
 /// Intended for `#[ignore]` integration tests that verify upstream URLs.
 pub fn assert_endpoint_reachable(url: &str) {
-    let client = reqwest::blocking::Client::builder()
+    if let EndpointStatus::Unreachable(e) = check_endpoint_status(url) {
+        panic!("HEAD request failed for {}: {}", url, e);
+    }
+}
+
+/// Outcome of probing an endpoint via HEAD. Distinguishes "our URL is wrong / service
+/// has vanished" from "remote infrastructure problem" so callers can decide whether
+/// to treat a failure as a hard error (unresolvable/refused/gone) vs. a reportable
+/// warning (e.g. the remote server has an expired TLS certificate).
+#[derive(Debug)]
+pub enum EndpointStatus {
+    /// Any HTTP response was received — server is up and TLS (if any) succeeded.
+    Ok,
+    /// TLS handshake failed (expired/invalid cert, unknown CA, protocol mismatch).
+    /// The remote host is reachable but its TLS configuration is broken. This is an
+    /// operational issue on the remote side, not a URL-correctness problem that
+    /// URL-verification tests are designed to catch.
+    TlsFailure(String),
+    /// DNS resolution, connection establishment, or request completion failed for
+    /// a non-TLS reason. This is what URL-verification tests exist to catch.
+    Unreachable(String),
+}
+
+impl EndpointStatus {
+    pub fn is_ok(&self) -> bool {
+        matches!(self, EndpointStatus::Ok)
+    }
+}
+
+/// Probe an HTTP endpoint via HEAD and return a typed status instead of panicking.
+///
+/// Use this from `#[ignore]` URL-verification tests that want to collect results
+/// across many URLs and report a summary rather than aborting on the first failure.
+pub fn check_endpoint_status(url: &str) -> EndpointStatus {
+    let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
-        .expect("Failed to build HTTP client");
+    {
+        Ok(c) => c,
+        Err(e) => return EndpointStatus::Unreachable(format!("client build: {}", e)),
+    };
 
-    client
-        .head(url)
-        .send()
-        .unwrap_or_else(|e| panic!("HEAD request failed for {}: {}", url, e));
+    match client.head(url).send() {
+        Ok(_) => EndpointStatus::Ok,
+        Err(err) => {
+            if is_tls_error(&err) {
+                EndpointStatus::TlsFailure(format_err_chain(&err))
+            } else {
+                EndpointStatus::Unreachable(format_err_chain(&err))
+            }
+        }
+    }
+}
+
+/// Walk a `reqwest::Error`'s source chain looking for tell-tale TLS-failure signals.
+/// reqwest doesn't expose a structured "this is a TLS error" predicate, so we match
+/// on substrings from the concrete error types (native-tls / rustls / webpki).
+fn is_tls_error(err: &reqwest::Error) -> bool {
+    let chain = format_err_chain(err).to_ascii_lowercase();
+    const TLS_MARKERS: &[&str] = &[
+        "certificate",
+        "tls handshake",
+        "ssl",
+        "bad certificate",
+        "untrusted",
+        "expired",
+        "invalidcertificate",
+    ];
+    TLS_MARKERS.iter().any(|m| chain.contains(m))
+}
+
+fn format_err_chain<E: std::error::Error + ?Sized>(err: &E) -> String {
+    use std::fmt::Write;
+    let mut out = err.to_string();
+    let mut current: Option<&dyn std::error::Error> = err.source();
+    while let Some(src) = current {
+        let _ = write!(out, ": {}", src);
+        current = src.source();
+    }
+    out
 }
 
 #[cfg(test)]
