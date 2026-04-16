@@ -12,7 +12,7 @@
 //! |--------|------|--------|
 //! | [ALeRCE](https://alerce.online) | None | Public REST API |
 //! | [ANTARES](https://antares.noirlab.edu) | None (search) | Public REST API |
-//! | [Fink](https://fink-portal.org) | None | Public REST API |
+//! | [Fink](https://ztf.fink-portal.org) | None | Public REST API |
 //! | [Lasair](https://lasair-ztf.lsst.ac.uk) | API token | Requires registration |
 //! | [Pitt-Google](https://pitt-broker.readthedocs.io) | GCP credentials | Google Cloud native |
 //! | [AMPEL](https://ampel.zeuthen.desy.de) | Bearer token | GitHub org membership |

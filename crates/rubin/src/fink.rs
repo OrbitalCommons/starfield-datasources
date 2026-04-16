@@ -1,13 +1,13 @@
 //! Fink alert broker client.
 //!
-//! [Fink](https://fink-portal.org) is a French-led broker built on Apache
+//! [Fink](https://ztf.fink-portal.org) is a French-led broker built on Apache
 //! Spark with strong ML classification pipelines. It offers both a REST API
 //! and Kafka streaming.
 //!
 //! **Authentication:** None required for REST API queries.
 //! Kafka streaming requires credentials obtained by registration.
 //!
-//! **Documentation:** <https://fink-broker.readthedocs.io>
+//! **Documentation:** <https://fink-broker.org>
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -15,13 +15,13 @@ use starfield::{Result, StarfieldError};
 use starfield_datasource_utils::{build_http_client, check_response_status};
 
 /// REST API base URL (ZTF data).
-pub const API_BASE_URL: &str = "https://api.fink-portal.org";
+pub const API_BASE_URL: &str = "https://api.ztf.fink-portal.org";
 
 /// REST API base URL for LSST data.
 pub const LSST_API_BASE_URL: &str = "https://api.lsst.fink-portal.org";
 
 /// Web portal URL.
-pub const PORTAL_URL: &str = "https://fink-portal.org";
+pub const PORTAL_URL: &str = "https://ztf.fink-portal.org";
 
 /// Client for the Fink broker REST API.
 pub struct FinkClient {
@@ -173,8 +173,8 @@ mod tests {
     #[test]
     fn test_api_url_matches_docs() {
         assert!(
-            API_BASE_URL.contains("fink-portal.org"),
-            "API_BASE_URL should point to fink-portal.org"
+            API_BASE_URL.contains("ztf.fink-portal.org"),
+            "API_BASE_URL should point to the current ztf.fink-portal.org host"
         );
     }
 }
