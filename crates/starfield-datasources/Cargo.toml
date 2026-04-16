@@ -1,6 +1,6 @@
 [package]
 name = "starfield-datasources"
-version = "0.4.0"
+version = "0.5.0"
 description = "Astronomical data source clients for the starfield ecosystem"
 edition.workspace = true
 license.workspace = true
@@ -11,6 +11,7 @@ default = ["horizons", "sbdb", "gaia", "hipparcos", "mpc", "rubin"]
 horizons = ["dep:starfield-horizons"]
 sbdb = ["dep:starfield-sbdb"]
 gaia = ["dep:starfield-gaia"]
+gaia-all = ["gaia", "starfield-gaia/all-releases"]
 hipparcos = ["dep:starfield-hipparcos"]
 mpc = ["dep:starfield-mpc"]
 rubin = ["dep:starfield-rubin"]

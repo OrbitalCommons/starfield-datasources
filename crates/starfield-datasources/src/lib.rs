@@ -7,7 +7,8 @@
 //!
 //! - `horizons` — NASA JPL HORIZONS API client
 //! - `sbdb` — NASA JPL Small-Body Database API client
-//! - `gaia` — ESA Gaia star catalog loader
+//! - `gaia` — ESA Gaia DR3 loader (default)
+//! - `gaia-all` — adds DR1 and DR2 alongside DR3
 //! - `hipparcos` — Hipparcos star catalog loader
 //! - `mpc` — Minor Planet Center client (MPCORB, observatory codes, observations)
 //! - `rubin` — Vera C. Rubin Observatory LSST alert broker clients

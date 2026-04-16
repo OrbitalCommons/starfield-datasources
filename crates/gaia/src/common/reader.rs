@@ -1,0 +1,176 @@
+//! Streaming CSV reader shared by every release.
+//!
+//! Handles plain `.csv`, gzipped `.csv.gz`, and DR3's ECSV format (long `#`-prefixed
+//! YAML header before the CSV header row). Projection is computed from the actual
+//! CSV header so missing/renamed columns surface as typed errors before any data
+//! is parsed.
+
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read};
+use std::marker::PhantomData;
+use std::path::Path;
+use std::sync::Arc;
+
+use arrow::csv::reader::Format;
+use arrow::csv::ReaderBuilder;
+use arrow::record_batch::RecordBatch;
+use flate2::read::GzDecoder;
+
+use crate::common::traits::GaiaRelease;
+use starfield::{Result, StarfieldError};
+
+const BATCH_SIZE: usize = 8192;
+
+/// Row-by-row iterator over a Gaia CSV file, typed to the release's [`Entry`](GaiaRelease::Entry).
+///
+/// Applies a magnitude limit on [`GaiaCore::phot_g_mean_mag`](crate::common::core::GaiaCore::phot_g_mean_mag)
+/// per row; entries fainter than the limit are skipped before materialization.
+pub struct CsvSourceReader<R: GaiaRelease> {
+    inner: arrow::csv::Reader<Box<dyn Read>>,
+    current: Option<RecordBatch>,
+    row: usize,
+    mag_limit: f64,
+    _marker: PhantomData<R>,
+}
+
+impl<R: GaiaRelease> CsvSourceReader<R> {
+    /// Open a `.csv` or `.csv.gz` file. Stars with `phot_g_mean_mag > mag_limit` are skipped.
+    pub fn open(path: impl AsRef<Path>, mag_limit: f64) -> Result<Self> {
+        let path = path.as_ref();
+        let file = File::open(path).map_err(StarfieldError::IoError)?;
+        let metadata = file.metadata().map_err(StarfieldError::IoError)?;
+        if metadata.len() == 0 {
+            return Err(StarfieldError::DataError(format!(
+                "gaia csv file is empty: {}",
+                path.display()
+            )));
+        }
+
+        let is_gz = path.extension().is_some_and(|e| e == "gz");
+        let raw: Box<dyn Read> = if is_gz {
+            Box::new(BufReader::new(GzDecoder::new(BufReader::new(file))))
+        } else {
+            Box::new(BufReader::new(file))
+        };
+        let mut buf = BufReader::new(raw);
+
+        if R::IS_ECSV {
+            strip_ecsv_header(&mut buf)?;
+        }
+
+        let header = read_csv_header(&mut buf)?;
+        let csv_columns: Vec<&str> = header.trim_end().split(',').collect();
+
+        let schema = R::arrow_schema();
+        let projection: Vec<usize> = schema
+            .fields()
+            .iter()
+            .map(|f| {
+                csv_columns
+                    .iter()
+                    .position(|c| *c == f.name())
+                    .ok_or_else(|| {
+                        StarfieldError::DataError(format!(
+                            "gaia csv: missing column `{}` in {} (have {} columns)",
+                            f.name(),
+                            path.display(),
+                            csv_columns.len()
+                        ))
+                    })
+            })
+            .collect::<Result<_>>()?;
+
+        let format = Format::default().with_header(false);
+        let reader = ReaderBuilder::new(Arc::clone(&schema))
+            .with_format(format)
+            .with_batch_size(BATCH_SIZE)
+            .with_projection(projection)
+            .build(Box::new(buf) as Box<dyn Read>)
+            .map_err(|e| StarfieldError::DataError(format!("gaia csv builder failed: {}", e)))?;
+
+        Ok(Self {
+            inner: reader,
+            current: None,
+            row: 0,
+            mag_limit,
+            _marker: PhantomData,
+        })
+    }
+
+    fn advance(&mut self) -> Result<Option<&RecordBatch>> {
+        if self.current.is_none() {
+            self.current = match self.inner.next() {
+                Some(Ok(b)) => Some(b),
+                Some(Err(e)) => {
+                    return Err(StarfieldError::DataError(format!(
+                        "gaia csv read error: {}",
+                        e
+                    )))
+                }
+                None => None,
+            };
+            self.row = 0;
+        }
+        Ok(self.current.as_ref())
+    }
+}
+
+impl<R: GaiaRelease> Iterator for CsvSourceReader<R> {
+    type Item = Result<R::Entry>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            match self.advance() {
+                Ok(Some(_)) => {}
+                Ok(None) => return None,
+                Err(e) => return Some(Err(e)),
+            }
+            let batch = self.current.as_ref().unwrap();
+            if self.row >= batch.num_rows() {
+                self.current = None;
+                continue;
+            }
+            let row = self.row;
+            self.row += 1;
+
+            let entry = match R::build_entry(batch, row) {
+                Ok(e) => e,
+                Err(e) => return Some(Err(e)),
+            };
+            use crate::common::traits::GaiaSource;
+            if entry.core().phot_g_mean_mag > self.mag_limit {
+                continue;
+            }
+            return Some(Ok(entry));
+        }
+    }
+}
+
+/// Consume `#`-prefixed comment lines (ECSV YAML metadata) from the reader until
+/// the first non-comment line. That line is the CSV header — it's left in the buffer.
+fn strip_ecsv_header<B: BufRead>(buf: &mut B) -> Result<()> {
+    loop {
+        let peek = buf.fill_buf().map_err(StarfieldError::IoError)?;
+        if peek.is_empty() {
+            return Err(StarfieldError::DataError(
+                "gaia ecsv: file ended before CSV header".into(),
+            ));
+        }
+        if peek[0] != b'#' {
+            return Ok(());
+        }
+        let mut line = String::new();
+        buf.read_line(&mut line).map_err(StarfieldError::IoError)?;
+    }
+}
+
+fn read_csv_header<B: BufRead>(buf: &mut B) -> Result<String> {
+    let mut header = String::new();
+    let n = buf.read_line(&mut header).map_err(StarfieldError::IoError)?;
+    if n == 0 {
+        return Err(StarfieldError::DataError(
+            "gaia csv: file has no header line".into(),
+        ));
+    }
+    Ok(header)
+}
