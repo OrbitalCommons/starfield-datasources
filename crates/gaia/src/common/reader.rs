@@ -166,7 +166,9 @@ fn strip_ecsv_header<B: BufRead>(buf: &mut B) -> Result<()> {
 
 fn read_csv_header<B: BufRead>(buf: &mut B) -> Result<String> {
     let mut header = String::new();
-    let n = buf.read_line(&mut header).map_err(StarfieldError::IoError)?;
+    let n = buf
+        .read_line(&mut header)
+        .map_err(StarfieldError::IoError)?;
     if n == 0 {
         return Err(StarfieldError::DataError(
             "gaia csv: file has no header line".into(),

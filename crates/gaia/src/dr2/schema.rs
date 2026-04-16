@@ -26,7 +26,9 @@ impl GaiaRelease for Dr2 {
     type Entry = Dr2Entry;
 
     fn arrow_schema() -> SchemaRef {
-        Arc::new(Schema::new(COLUMNS.iter().map(|c| c.field()).collect::<Vec<_>>()))
+        Arc::new(Schema::new(
+            COLUMNS.iter().map(|c| c.field()).collect::<Vec<_>>(),
+        ))
     }
 
     fn build_entry(batch: &RecordBatch, row: usize) -> Result<Self::Entry> {
@@ -75,9 +77,17 @@ impl GaiaRelease for Dr2 {
             astrometric_params_solved: opt_u32(batch, c.astrometric_params_solved, row)?,
             astrometric_weight_al: opt_f32(batch, c.astrometric_weight_al, row)?,
             astrometric_pseudo_colour: opt_f32(batch, c.astrometric_pseudo_colour, row)?,
-            astrometric_pseudo_colour_error: opt_f32(batch, c.astrometric_pseudo_colour_error, row)?,
+            astrometric_pseudo_colour_error: opt_f32(
+                batch,
+                c.astrometric_pseudo_colour_error,
+                row,
+            )?,
             mean_varpi_factor_al: opt_f32(batch, c.mean_varpi_factor_al, row)?,
-            astrometric_matched_observations: opt_u32(batch, c.astrometric_matched_observations, row)?,
+            astrometric_matched_observations: opt_u32(
+                batch,
+                c.astrometric_matched_observations,
+                row,
+            )?,
             visibility_periods_used: opt_u32(batch, c.visibility_periods_used, row)?,
             astrometric_sigma5d_max: opt_f32(batch, c.astrometric_sigma5d_max, row)?,
             frame_rotator_object_type: opt_u32(batch, c.frame_rotator_object_type, row)?,
@@ -166,10 +176,18 @@ struct ColSpec {
 
 impl ColSpec {
     const fn req(name: &'static str, ty: DataType) -> Self {
-        Self { name, ty, nullable: false }
+        Self {
+            name,
+            ty,
+            nullable: false,
+        }
     }
     const fn opt(name: &'static str, ty: DataType) -> Self {
-        Self { name, ty, nullable: true }
+        Self {
+            name,
+            ty,
+            nullable: true,
+        }
     }
     fn field(&self) -> Field {
         Field::new(self.name, self.ty.clone(), self.nullable)

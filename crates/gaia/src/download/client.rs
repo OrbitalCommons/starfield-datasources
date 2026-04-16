@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use regex::Regex;
 use starfield::{Result, StarfieldError};
 use starfield_datasource_utils::{
-    build_http_client, cache_dir, check_response_status, download_to_file, file_exists_and_not_empty,
+    build_http_client, cache_dir, check_response_status, download_to_file,
+    file_exists_and_not_empty,
 };
 
 use crate::common::traits::GaiaRelease;
@@ -47,7 +48,11 @@ impl<R: GaiaRelease> Downloader<R> {
             .map_err(|e| StarfieldError::DataError(format!("read index body: {}", e)))?;
 
         let re = Regex::new(R::FILE_REGEX).map_err(|e| {
-            StarfieldError::DataError(format!("compile file regex for {}: {}", R::RELEASE.as_str(), e))
+            StarfieldError::DataError(format!(
+                "compile file regex for {}: {}",
+                R::RELEASE.as_str(),
+                e
+            ))
         })?;
         let files: Vec<String> = re
             .captures_iter(&html)

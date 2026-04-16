@@ -69,11 +69,12 @@ fn dr2_parses_bp_rp_rv_and_apsis() {
     let catalog = Dr2Catalog::from_csv_file(fixture.path(), 20.0).expect("load fixture");
 
     assert_eq!(catalog.len(), 1);
-    let e = catalog
-        .get_star(1000225938242805248)
-        .expect("by source_id");
+    let e = catalog.get_star(1000225938242805248).expect("by source_id");
     assert_eq!(e.release(), Release::Dr2);
-    assert_eq!(e.designation.as_deref(), Some("Gaia DR2 1000225938242805248"));
+    assert_eq!(
+        e.designation.as_deref(),
+        Some("Gaia DR2 1000225938242805248")
+    );
 
     let bp = e.bp_rp.as_ref().expect("BP/RP present");
     assert!((bp.bp_rp.unwrap() - 0.836).abs() < 1e-5);

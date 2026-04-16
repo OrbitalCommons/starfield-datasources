@@ -26,7 +26,9 @@ impl GaiaRelease for Dr1 {
     type Entry = Dr1Entry;
 
     fn arrow_schema() -> SchemaRef {
-        Arc::new(Schema::new(COLUMNS.iter().map(|c| c.field()).collect::<Vec<_>>()))
+        Arc::new(Schema::new(
+            COLUMNS.iter().map(|c| c.field()).collect::<Vec<_>>(),
+        ))
     }
 
     fn build_entry(batch: &RecordBatch, row: usize) -> Result<Self::Entry> {
@@ -108,10 +110,18 @@ struct ColSpec {
 
 impl ColSpec {
     const fn req(name: &'static str, ty: DataType) -> Self {
-        Self { name, ty, nullable: false }
+        Self {
+            name,
+            ty,
+            nullable: false,
+        }
     }
     const fn opt(name: &'static str, ty: DataType) -> Self {
-        Self { name, ty, nullable: true }
+        Self {
+            name,
+            ty,
+            nullable: true,
+        }
     }
     fn field(&self) -> Field {
         Field::new(self.name, self.ty.clone(), self.nullable)

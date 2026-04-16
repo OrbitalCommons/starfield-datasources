@@ -116,10 +116,7 @@ fn dr3_parses_nested_substructs() {
     assert!((bp_rp.bp_rp.unwrap() - 0.05).abs() < 1e-6);
     assert!((bp_rp.phot_bp_mean_mag.unwrap() - (-1.43)).abs() < 1e-9);
 
-    let rv = bright
-        .radial_velocity
-        .as_ref()
-        .expect("RV block present");
+    let rv = bright.radial_velocity.as_ref().expect("RV block present");
     assert!((rv.radial_velocity.unwrap() - (-7.6)).abs() < 1e-6);
     assert_eq!(rv.rv_nb_transits, Some(38));
 
@@ -183,10 +180,7 @@ fn dr3_mag_limit_filters_rows() {
 #[test]
 fn dr3_missing_required_column_errors() {
     // Header intentionally lacks several columns declared by the schema.
-    let mut f = tempfile::Builder::new()
-        .suffix(".csv")
-        .tempfile()
-        .unwrap();
+    let mut f = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();
     writeln!(f, "# %ECSV 1.0").unwrap();
     writeln!(f, "source_id,solution_id,ref_epoch,ra,dec").unwrap();
     writeln!(f, "1,2,2016.0,10.0,20.0").unwrap();
@@ -194,5 +188,9 @@ fn dr3_missing_required_column_errors() {
     let result = Dr3Catalog::from_csv_file(f.path(), 20.0);
     assert!(result.is_err(), "expected missing-column error");
     let msg = result.err().unwrap().to_string();
-    assert!(msg.contains("missing column"), "error should flag missing column: {}", msg);
+    assert!(
+        msg.contains("missing column"),
+        "error should flag missing column: {}",
+        msg
+    );
 }

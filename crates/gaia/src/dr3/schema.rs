@@ -30,7 +30,9 @@ impl GaiaRelease for Dr3 {
     type Entry = Dr3Entry;
 
     fn arrow_schema() -> SchemaRef {
-        Arc::new(Schema::new(COLUMNS.iter().map(|c| c.field()).collect::<Vec<_>>()))
+        Arc::new(Schema::new(
+            COLUMNS.iter().map(|c| c.field()).collect::<Vec<_>>(),
+        ))
     }
 
     fn build_entry(batch: &RecordBatch, row: usize) -> Result<Self::Entry> {

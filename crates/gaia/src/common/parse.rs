@@ -66,7 +66,11 @@ pub fn opt_f64(batch: &RecordBatch, idx: usize, row: usize) -> Result<Option<f64
         .as_any()
         .downcast_ref::<Float64Array>()
         .ok_or_else(|| type_err(batch, idx, "Float64"))?;
-    Ok(if arr.is_null(row) { None } else { Some(arr.value(row)) })
+    Ok(if arr.is_null(row) {
+        None
+    } else {
+        Some(arr.value(row))
+    })
 }
 
 pub fn opt_f32(batch: &RecordBatch, idx: usize, row: usize) -> Result<Option<f32>> {
@@ -74,7 +78,11 @@ pub fn opt_f32(batch: &RecordBatch, idx: usize, row: usize) -> Result<Option<f32
         .as_any()
         .downcast_ref::<Float32Array>()
         .ok_or_else(|| type_err(batch, idx, "Float32"))?;
-    Ok(if arr.is_null(row) { None } else { Some(arr.value(row)) })
+    Ok(if arr.is_null(row) {
+        None
+    } else {
+        Some(arr.value(row))
+    })
 }
 
 /// Required `f32`.
@@ -92,7 +100,11 @@ pub fn req_f32(batch: &RecordBatch, idx: usize, row: usize) -> Result<f32> {
 pub fn opt_u32(batch: &RecordBatch, idx: usize, row: usize) -> Result<Option<u32>> {
     let any = col(batch, idx).as_any();
     if let Some(arr) = any.downcast_ref::<UInt32Array>() {
-        return Ok(if arr.is_null(row) { None } else { Some(arr.value(row)) });
+        return Ok(if arr.is_null(row) {
+            None
+        } else {
+            Some(arr.value(row))
+        });
     }
     if let Some(arr) = any.downcast_ref::<Int32Array>() {
         return Ok(if arr.is_null(row) {
@@ -114,7 +126,11 @@ pub fn opt_u32(batch: &RecordBatch, idx: usize, row: usize) -> Result<Option<u32
 pub fn opt_u64(batch: &RecordBatch, idx: usize, row: usize) -> Result<Option<u64>> {
     let any = col(batch, idx).as_any();
     if let Some(arr) = any.downcast_ref::<UInt64Array>() {
-        return Ok(if arr.is_null(row) { None } else { Some(arr.value(row)) });
+        return Ok(if arr.is_null(row) {
+            None
+        } else {
+            Some(arr.value(row))
+        });
     }
     if let Some(arr) = any.downcast_ref::<Int64Array>() {
         return Ok(if arr.is_null(row) {
@@ -131,7 +147,11 @@ pub fn opt_bool(batch: &RecordBatch, idx: usize, row: usize) -> Result<Option<bo
         .as_any()
         .downcast_ref::<BooleanArray>()
         .ok_or_else(|| type_err(batch, idx, "Boolean"))?;
-    Ok(if arr.is_null(row) { None } else { Some(arr.value(row)) })
+    Ok(if arr.is_null(row) {
+        None
+    } else {
+        Some(arr.value(row))
+    })
 }
 
 pub fn opt_str(batch: &RecordBatch, idx: usize, row: usize) -> Result<Option<&str>> {
@@ -139,7 +159,11 @@ pub fn opt_str(batch: &RecordBatch, idx: usize, row: usize) -> Result<Option<&st
         .as_any()
         .downcast_ref::<StringArray>()
         .ok_or_else(|| type_err(batch, idx, "Utf8"))?;
-    Ok(if arr.is_null(row) { None } else { Some(arr.value(row)) })
+    Ok(if arr.is_null(row) {
+        None
+    } else {
+        Some(arr.value(row))
+    })
 }
 
 fn null_err(batch: &RecordBatch, idx: usize, row: usize) -> StarfieldError {

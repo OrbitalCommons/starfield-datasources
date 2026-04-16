@@ -9,9 +9,9 @@ use flate2::read::GzDecoder;
 use starfield::{Result, StarfieldError};
 
 use crate::common::catalog::GaiaCatalogBase;
+use crate::download::Downloader;
 use crate::dr1::entry::{Dr1Entry, TgasBlock};
 use crate::dr1::schema::Dr1;
-use crate::download::Downloader;
 
 /// In-memory Gaia DR1 catalog, keyed by `source_id`.
 #[derive(Debug)]
@@ -24,7 +24,9 @@ impl Dr1Catalog {
 
     /// Load a DR1 `GaiaSource_*.csv.gz` file.
     pub fn from_csv_file(path: impl AsRef<Path>, mag_limit: f64) -> Result<Self> {
-        Ok(Self(GaiaCatalogBase::<Dr1>::from_csv_file(path, mag_limit)?))
+        Ok(Self(GaiaCatalogBase::<Dr1>::from_csv_file(
+            path, mag_limit,
+        )?))
     }
 
     pub fn inner(&self) -> &GaiaCatalogBase<Dr1> {
@@ -127,12 +129,20 @@ pub fn load_tgas_block_map(path: impl AsRef<Path>) -> Result<HashMap<u64, TgasBl
             Ok(v) => v,
             Err(_) => continue,
         };
-        let hip = fields
-            .get(hip_idx)
-            .and_then(|s| if s.is_empty() { None } else { s.parse::<u32>().ok() });
-        let tycho2_id = fields
-            .get(tycho_idx)
-            .and_then(|s| if s.is_empty() { None } else { Some(s.to_string()) });
+        let hip = fields.get(hip_idx).and_then(|s| {
+            if s.is_empty() {
+                None
+            } else {
+                s.parse::<u32>().ok()
+            }
+        });
+        let tycho2_id = fields.get(tycho_idx).and_then(|s| {
+            if s.is_empty() {
+                None
+            } else {
+                Some(s.to_string())
+            }
+        });
         map.insert(source_id, TgasBlock { hip, tycho2_id });
     }
     Ok(map)

@@ -18,7 +18,9 @@ impl Dr2Catalog {
     }
 
     pub fn from_csv_file(path: impl AsRef<Path>, mag_limit: f64) -> Result<Self> {
-        Ok(Self(GaiaCatalogBase::<Dr2>::from_csv_file(path, mag_limit)?))
+        Ok(Self(GaiaCatalogBase::<Dr2>::from_csv_file(
+            path, mag_limit,
+        )?))
     }
 
     pub fn inner(&self) -> &GaiaCatalogBase<Dr2> {

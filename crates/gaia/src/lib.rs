@@ -48,11 +48,11 @@ pub use dr3::{Dr3, Dr3Catalog, Dr3Entry};
 
 /// Convenience prelude for Gaia consumers.
 pub mod prelude {
-    pub use crate::{GaiaCore, GaiaSource, Release};
     #[cfg(feature = "dr1")]
     pub use crate::{Dr1Catalog, Dr1Entry};
     #[cfg(feature = "dr2")]
     pub use crate::{Dr2Catalog, Dr2Entry};
     #[cfg(feature = "dr3")]
     pub use crate::{Dr3Catalog, Dr3Entry};
+    pub use crate::{GaiaCore, GaiaSource, Release};
 }

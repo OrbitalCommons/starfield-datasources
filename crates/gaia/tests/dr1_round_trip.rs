@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::io::Write;
 
 use starfield::catalogs::StarCatalog;
-use starfield_gaia::{Dr1Catalog, GaiaSource, Release, TgasBlock};
 use starfield_gaia::dr1::load_tgas_block_map;
+use starfield_gaia::{Dr1Catalog, GaiaSource, Release, TgasBlock};
 
 const HEADER: &str = "source_id,solution_id,ref_epoch,random_index,ra,ra_error,dec,dec_error,ra_dec_corr,parallax,parallax_error,pmra,pmra_error,pmdec,pmdec_error,l,b,ecl_lon,ecl_lat,phot_g_mean_mag,phot_g_mean_flux,phot_g_mean_flux_error,phot_g_n_obs,phot_variable_flag,astrometric_n_obs_al,astrometric_excess_noise,astrometric_excess_noise_sig,astrometric_primary_flag,duplicated_source,matched_observations,astrometric_n_obs_ac,astrometric_n_good_obs_al,astrometric_n_good_obs_ac,astrometric_n_bad_obs_al,astrometric_n_bad_obs_ac,astrometric_delta_q,astrometric_relegation_factor,astrometric_weight_al,astrometric_weight_ac,astrometric_priors_used,scan_direction_strength_k1,scan_direction_strength_k2,scan_direction_strength_k3,scan_direction_strength_k4,scan_direction_mean_k1,scan_direction_mean_k2,scan_direction_mean_k3,scan_direction_mean_k4";
 
