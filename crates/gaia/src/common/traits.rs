@@ -68,4 +68,19 @@ pub trait GaiaRelease: 'static {
     /// Build one entry from row `row` of `batch`. Columns are in the order declared
     /// by [`arrow_schema`].
     fn build_entry(batch: &RecordBatch, row: usize) -> Result<Self::Entry>;
+
+    /// Format an entry as one CSV row matching the column layout in [`arrow_schema`].
+    /// Floats use Rust's default `Display` (full round-trip precision); `Option::None`
+    /// becomes the empty string. Output is parseable by [`from_csv_file`](crate::common::catalog::GaiaCatalogBase::from_csv_file).
+    fn format_csv_row(entry: &Self::Entry) -> String;
+
+    /// Comma-joined header line listing every column in [`arrow_schema`] order.
+    fn csv_header() -> String {
+        Self::arrow_schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
 }

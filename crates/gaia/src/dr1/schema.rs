@@ -7,6 +7,7 @@ use arrow::record_batch::RecordBatch;
 use starfield::Result;
 
 use crate::common::core::{GaiaCore, VarFlag};
+use crate::common::format::*;
 use crate::common::parse::*;
 use crate::common::traits::{GaiaRelease, Release};
 use crate::dr1::entry::{AstrometricExtra, Dr1Entry, ScanDirection};
@@ -99,6 +100,64 @@ impl GaiaRelease for Dr1 {
             scan_direction,
             tgas: None,
         })
+    }
+
+    fn format_csv_row(e: &Self::Entry) -> String {
+        let c = &e.core;
+        let ax = &e.astrometric_extra;
+        let sd = &e.scan_direction;
+        // Order MUST match COLUMNS below.
+        [
+            c.source_id.to_string(),
+            c.solution_id.to_string(),
+            c.ref_epoch.to_string(),
+            fopt(c.random_index),
+            c.ra.to_string(),
+            c.ra_error.to_string(),
+            c.dec.to_string(),
+            c.dec_error.to_string(),
+            fopt(c.ra_dec_corr),
+            fopt(c.parallax),
+            fopt(c.parallax_error),
+            fopt(c.pmra),
+            fopt(c.pmra_error),
+            fopt(c.pmdec),
+            fopt(c.pmdec_error),
+            c.l.to_string(),
+            c.b.to_string(),
+            c.ecl_lon.to_string(),
+            c.ecl_lat.to_string(),
+            c.phot_g_mean_mag.to_string(),
+            fopt(c.phot_g_mean_flux),
+            fopt(c.phot_g_mean_flux_error),
+            fopt(c.phot_g_n_obs),
+            fvar(c.phot_variable_flag).to_string(),
+            fopt(c.astrometric_n_obs_al),
+            fopt(c.astrometric_excess_noise),
+            fopt(c.astrometric_excess_noise_sig),
+            fopt_bool(c.astrometric_primary_flag).to_string(),
+            fopt_bool(c.duplicated_source).to_string(),
+            fopt(c.matched_observations),
+            fopt(ax.astrometric_n_obs_ac),
+            fopt(ax.astrometric_n_good_obs_al),
+            fopt(ax.astrometric_n_good_obs_ac),
+            fopt(ax.astrometric_n_bad_obs_al),
+            fopt(ax.astrometric_n_bad_obs_ac),
+            fopt(ax.astrometric_delta_q),
+            fopt(ax.astrometric_relegation_factor),
+            fopt(ax.astrometric_weight_al),
+            fopt(ax.astrometric_weight_ac),
+            fopt(ax.astrometric_priors_used),
+            fopt(sd.strength_k1),
+            fopt(sd.strength_k2),
+            fopt(sd.strength_k3),
+            fopt(sd.strength_k4),
+            fopt(sd.mean_k1),
+            fopt(sd.mean_k2),
+            fopt(sd.mean_k3),
+            fopt(sd.mean_k4),
+        ]
+        .join(",")
     }
 }
 

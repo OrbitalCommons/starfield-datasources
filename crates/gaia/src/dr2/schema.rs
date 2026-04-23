@@ -7,6 +7,7 @@ use arrow::record_batch::RecordBatch;
 use starfield::Result;
 
 use crate::common::core::{GaiaCore, VarFlag};
+use crate::common::format::*;
 use crate::common::parse::*;
 use crate::common::traits::{GaiaRelease, Release};
 use crate::dr2::entry::{AstroParams, AstrometricExtra, BpRpPhotometry, Dr2Entry, RadialVelocity};
@@ -165,6 +166,101 @@ impl GaiaRelease for Dr2 {
             radial_velocity,
             astrophysical,
         })
+    }
+
+    fn format_csv_row(e: &Self::Entry) -> String {
+        let c = &e.core;
+        let ax = &e.astrometric_extra;
+        let bp = e.bp_rp.as_ref();
+        let rv = e.radial_velocity.as_ref();
+        let ap = e.astrophysical.as_ref();
+        // Order MUST match COLUMNS below.
+        [
+            c.source_id.to_string(),
+            c.solution_id.to_string(),
+            fopt_str(e.designation.as_deref()).to_string(),
+            c.ref_epoch.to_string(),
+            fopt(c.random_index),
+            c.ra.to_string(),
+            c.ra_error.to_string(),
+            c.dec.to_string(),
+            c.dec_error.to_string(),
+            fopt(c.ra_dec_corr),
+            fopt(c.parallax),
+            fopt(c.parallax_error),
+            fopt(e.parallax_over_error),
+            fopt(c.pmra),
+            fopt(c.pmra_error),
+            fopt(c.pmdec),
+            fopt(c.pmdec_error),
+            c.l.to_string(),
+            c.b.to_string(),
+            c.ecl_lon.to_string(),
+            c.ecl_lat.to_string(),
+            c.phot_g_mean_mag.to_string(),
+            fopt(c.phot_g_mean_flux),
+            fopt(c.phot_g_mean_flux_error),
+            fopt(c.phot_g_n_obs),
+            fvar(c.phot_variable_flag).to_string(),
+            fopt(c.astrometric_n_obs_al),
+            fopt(c.astrometric_excess_noise),
+            fopt(c.astrometric_excess_noise_sig),
+            fopt_bool(c.astrometric_primary_flag).to_string(),
+            fopt_bool(c.duplicated_source).to_string(),
+            fopt(c.matched_observations),
+            fopt(ax.astrometric_n_good_obs_al),
+            fopt(ax.astrometric_n_bad_obs_al),
+            fopt(ax.astrometric_gof_al),
+            fopt(ax.astrometric_chi2_al),
+            fopt(ax.astrometric_params_solved),
+            fopt(ax.astrometric_weight_al),
+            fopt(ax.astrometric_pseudo_colour),
+            fopt(ax.astrometric_pseudo_colour_error),
+            fopt(ax.mean_varpi_factor_al),
+            fopt(ax.astrometric_matched_observations),
+            fopt(ax.visibility_periods_used),
+            fopt(ax.astrometric_sigma5d_max),
+            fopt(ax.frame_rotator_object_type),
+            fopt(bp.and_then(|b| b.phot_bp_n_obs)),
+            fopt(bp.and_then(|b| b.phot_bp_mean_flux)),
+            fopt(bp.and_then(|b| b.phot_bp_mean_flux_error)),
+            fopt(bp.and_then(|b| b.phot_bp_mean_flux_over_error)),
+            fopt(bp.and_then(|b| b.phot_bp_mean_mag)),
+            fopt(bp.and_then(|b| b.phot_rp_n_obs)),
+            fopt(bp.and_then(|b| b.phot_rp_mean_flux)),
+            fopt(bp.and_then(|b| b.phot_rp_mean_flux_error)),
+            fopt(bp.and_then(|b| b.phot_rp_mean_flux_over_error)),
+            fopt(bp.and_then(|b| b.phot_rp_mean_mag)),
+            fopt(bp.and_then(|b| b.phot_bp_rp_excess_factor)),
+            fopt(bp.and_then(|b| b.phot_proc_mode)),
+            fopt(bp.and_then(|b| b.bp_rp)),
+            fopt(bp.and_then(|b| b.bp_g)),
+            fopt(bp.and_then(|b| b.g_rp)),
+            fopt(rv.and_then(|r| r.radial_velocity)),
+            fopt(rv.and_then(|r| r.radial_velocity_error)),
+            fopt(rv.and_then(|r| r.rv_nb_transits)),
+            fopt(rv.and_then(|r| r.rv_template_teff)),
+            fopt(rv.and_then(|r| r.rv_template_logg)),
+            fopt(rv.and_then(|r| r.rv_template_fe_h)),
+            fopt(ap.and_then(|a| a.priam_flags)),
+            fopt(ap.and_then(|a| a.teff_val)),
+            fopt(ap.and_then(|a| a.teff_percentile_lower)),
+            fopt(ap.and_then(|a| a.teff_percentile_upper)),
+            fopt(ap.and_then(|a| a.a_g_val)),
+            fopt(ap.and_then(|a| a.a_g_percentile_lower)),
+            fopt(ap.and_then(|a| a.a_g_percentile_upper)),
+            fopt(ap.and_then(|a| a.e_bp_min_rp_val)),
+            fopt(ap.and_then(|a| a.e_bp_min_rp_percentile_lower)),
+            fopt(ap.and_then(|a| a.e_bp_min_rp_percentile_upper)),
+            fopt(ap.and_then(|a| a.flame_flags)),
+            fopt(ap.and_then(|a| a.radius_val)),
+            fopt(ap.and_then(|a| a.radius_percentile_lower)),
+            fopt(ap.and_then(|a| a.radius_percentile_upper)),
+            fopt(ap.and_then(|a| a.lum_val)),
+            fopt(ap.and_then(|a| a.lum_percentile_lower)),
+            fopt(ap.and_then(|a| a.lum_percentile_upper)),
+        ]
+        .join(",")
     }
 }
 
