@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use arrow::csv::reader::Format;
 use arrow::csv::ReaderBuilder;
+use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
 use flate2::read::GzDecoder;
 
@@ -61,8 +62,27 @@ impl<R: GaiaRelease> CsvSourceReader<R> {
         let header = read_csv_header(&mut buf)?;
         let csv_columns: Vec<&str> = header.trim_end().split(',').collect();
 
-        let schema = R::arrow_schema();
-        let projection: Vec<usize> = schema
+        // Arrow CSV's projection requires the schema to describe *every* column
+        // in the source file. We build a full-width schema by overlaying our
+        // typed schema (per-release `arrow_schema`) onto the CSV header order;
+        // unknown columns get DataType::Utf8 and are projected out.
+        let typed = R::arrow_schema();
+        let mut typed_by_name: std::collections::HashMap<&str, &Field> = Default::default();
+        for f in typed.fields() {
+            typed_by_name.insert(f.name().as_str(), f);
+        }
+        let full_fields: Vec<Field> = csv_columns
+            .iter()
+            .map(|name| match typed_by_name.get(name) {
+                Some(f) => Field::new(*name, f.data_type().clone(), f.is_nullable()),
+                None => Field::new(*name, DataType::Utf8, true),
+            })
+            .collect();
+        let full_schema = Arc::new(Schema::new(full_fields));
+
+        // Projection picks the columns we actually want (in our schema's order
+        // so `build_entry` can index batches by `ColIdx`).
+        let projection: Vec<usize> = typed
             .fields()
             .iter()
             .map(|f| {
@@ -81,7 +101,7 @@ impl<R: GaiaRelease> CsvSourceReader<R> {
             .collect::<Result<_>>()?;
 
         let format = Format::default().with_header(false);
-        let reader = ReaderBuilder::new(Arc::clone(&schema))
+        let reader = ReaderBuilder::new(full_schema)
             .with_format(format)
             .with_batch_size(BATCH_SIZE)
             .with_projection(projection)

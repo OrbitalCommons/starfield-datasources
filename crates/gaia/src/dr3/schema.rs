@@ -7,6 +7,7 @@ use arrow::record_batch::RecordBatch;
 use starfield::Result;
 
 use crate::common::core::{GaiaCore, VarFlag};
+use crate::common::format::*;
 use crate::common::parse::*;
 use crate::common::traits::{GaiaRelease, Release};
 use crate::dr3::entry::{
@@ -187,6 +188,118 @@ impl GaiaRelease for Dr3 {
             data_links,
             classifications,
         })
+    }
+
+    fn format_csv_row(e: &Self::Entry) -> String {
+        let c = &e.core;
+        let ax = &e.astrometric_extra;
+        let ip = &e.ipd;
+        let bp = e.bp_rp.as_ref();
+        let rv = e.radial_velocity.as_ref();
+        let gsp = e.gspphot.as_ref();
+        let dl = &e.data_links;
+        let cl = &e.classifications;
+        // Order MUST match COLUMNS below.
+        [
+            c.source_id.to_string(),
+            c.solution_id.to_string(),
+            c.ref_epoch.to_string(),
+            fopt(c.random_index),
+            fopt_str(e.designation.as_deref()).to_string(),
+            c.ra.to_string(),
+            c.ra_error.to_string(),
+            c.dec.to_string(),
+            c.dec_error.to_string(),
+            fopt(c.ra_dec_corr),
+            fopt(c.parallax),
+            fopt(c.parallax_error),
+            fopt(e.parallax_over_error),
+            fopt(e.pm),
+            fopt(c.pmra),
+            fopt(c.pmra_error),
+            fopt(c.pmdec),
+            fopt(c.pmdec_error),
+            c.l.to_string(),
+            c.b.to_string(),
+            c.ecl_lon.to_string(),
+            c.ecl_lat.to_string(),
+            c.phot_g_mean_mag.to_string(),
+            fopt(c.phot_g_mean_flux),
+            fopt(c.phot_g_mean_flux_error),
+            fopt(c.phot_g_n_obs),
+            fvar(c.phot_variable_flag).to_string(),
+            fopt(c.astrometric_n_obs_al),
+            fopt(c.astrometric_excess_noise),
+            fopt(c.astrometric_excess_noise_sig),
+            fopt_bool(c.astrometric_primary_flag).to_string(),
+            fopt_bool(c.duplicated_source).to_string(),
+            fopt(c.matched_observations),
+            fopt(ax.astrometric_n_good_obs_al),
+            fopt(ax.astrometric_n_bad_obs_al),
+            fopt(ax.astrometric_gof_al),
+            fopt(ax.astrometric_chi2_al),
+            fopt(ax.astrometric_params_solved),
+            fopt(ax.visibility_periods_used),
+            fopt(ax.astrometric_sigma5d_max),
+            fopt(ax.nu_eff_used_in_astrometry),
+            fopt(ax.pseudocolour),
+            fopt(ax.pseudocolour_error),
+            fopt(ip.ruwe),
+            fopt(ip.ipd_gof_harmonic_amplitude),
+            fopt(ip.ipd_gof_harmonic_phase),
+            fopt(ip.ipd_frac_multi_peak),
+            fopt(ip.ipd_frac_odd_win),
+            fopt(bp.and_then(|b| b.phot_bp_mean_mag)),
+            fopt(bp.and_then(|b| b.phot_bp_mean_flux)),
+            fopt(bp.and_then(|b| b.phot_bp_mean_flux_error)),
+            fopt(bp.and_then(|b| b.phot_bp_n_obs)),
+            fopt(bp.and_then(|b| b.phot_rp_mean_mag)),
+            fopt(bp.and_then(|b| b.phot_rp_mean_flux)),
+            fopt(bp.and_then(|b| b.phot_rp_mean_flux_error)),
+            fopt(bp.and_then(|b| b.phot_rp_n_obs)),
+            fopt(bp.and_then(|b| b.bp_rp)),
+            fopt(bp.and_then(|b| b.bp_g)),
+            fopt(bp.and_then(|b| b.g_rp)),
+            fopt(bp.and_then(|b| b.phot_bp_rp_excess_factor)),
+            fopt(bp.and_then(|b| b.phot_proc_mode)),
+            fopt(rv.and_then(|r| r.radial_velocity)),
+            fopt(rv.and_then(|r| r.radial_velocity_error)),
+            fopt(rv.and_then(|r| r.rv_method_used)),
+            fopt(rv.and_then(|r| r.rv_nb_transits)),
+            fopt(rv.and_then(|r| r.rv_expected_sig_to_noise)),
+            fopt(rv.and_then(|r| r.rv_amplitude_robust)),
+            fopt(rv.and_then(|r| r.rv_template_teff)),
+            fopt(rv.and_then(|r| r.rv_template_logg)),
+            fopt(rv.and_then(|r| r.rv_template_fe_h)),
+            fopt(rv.and_then(|r| r.rv_atm_param_origin)),
+            fopt(gsp.and_then(|g| g.teff_gspphot)),
+            fopt(gsp.and_then(|g| g.teff_gspphot_lower)),
+            fopt(gsp.and_then(|g| g.teff_gspphot_upper)),
+            fopt(gsp.and_then(|g| g.logg_gspphot)),
+            fopt(gsp.and_then(|g| g.mh_gspphot)),
+            fopt(gsp.and_then(|g| g.distance_gspphot)),
+            fopt(gsp.and_then(|g| g.distance_gspphot_lower)),
+            fopt(gsp.and_then(|g| g.distance_gspphot_upper)),
+            fopt(gsp.and_then(|g| g.azero_gspphot)),
+            fopt(gsp.and_then(|g| g.ag_gspphot)),
+            fopt(gsp.and_then(|g| g.ebpminrp_gspphot)),
+            fopt_str(gsp.and_then(|g| g.libname_gspphot.as_deref())).to_string(),
+            fopt_bool(dl.has_xp_continuous).to_string(),
+            fopt_bool(dl.has_xp_sampled).to_string(),
+            fopt_bool(dl.has_rvs).to_string(),
+            fopt_bool(dl.has_epoch_photometry).to_string(),
+            fopt_bool(dl.has_epoch_rv).to_string(),
+            fopt_bool(dl.has_mcmc_gspphot).to_string(),
+            fopt_bool(dl.has_mcmc_msc).to_string(),
+            fopt_bool(cl.in_qso_candidates).to_string(),
+            fopt_bool(cl.in_galaxy_candidates).to_string(),
+            fopt_bool(cl.in_andromeda_survey).to_string(),
+            fopt(cl.non_single_star),
+            fopt(cl.classprob_dsc_combmod_quasar),
+            fopt(cl.classprob_dsc_combmod_galaxy),
+            fopt(cl.classprob_dsc_combmod_star),
+        ]
+        .join(",")
     }
 }
 

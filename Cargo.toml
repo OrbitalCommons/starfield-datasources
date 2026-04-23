@@ -5,6 +5,7 @@ members = [
     "crates/horizons",
     "crates/sbdb",
     "crates/gaia",
+    "crates/gaia-tools",
     "crates/hipparcos",
     "crates/mpc",
     "crates/rubin",
@@ -31,3 +32,5 @@ regex = "1.10"
 rand = "0.8"
 indicatif = "0.17"
 arrow = "58"
+cdshealpix = "0.9.1"
+clap = { version = "4", features = ["derive"] }

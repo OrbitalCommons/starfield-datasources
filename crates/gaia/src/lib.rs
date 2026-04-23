@@ -28,6 +28,7 @@
 
 pub mod common;
 pub mod download;
+pub mod excerpt;
 
 #[cfg(feature = "dr1")]
 pub mod dr1;

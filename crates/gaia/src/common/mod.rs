@@ -2,6 +2,7 @@
 
 pub mod catalog;
 pub mod core;
+pub mod format;
 pub mod parse;
 pub mod reader;
 pub mod traits;
