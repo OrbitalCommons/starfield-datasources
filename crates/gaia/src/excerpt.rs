@@ -268,16 +268,57 @@ pub fn excerpt_csv_file<R, S, F>(
     mag_limit: f64,
     output_dir: impl AsRef<Path>,
     sharder: S,
-    mut predicate: F,
+    predicate: F,
 ) -> Result<ExcerptSummary>
 where
     R: GaiaRelease,
     S: ShardKey<R::Entry>,
     F: FnMut(&R::Entry) -> bool,
 {
-    let mut writer = ShardedCsvWriter::<R, S>::new(output_dir, sharder)?;
-    let mut input_rows = 0usize;
     let reader = CsvSourceReader::<R>::open(input_path, mag_limit)?;
+    let mut writer = ShardedCsvWriter::<R, S>::new(output_dir, sharder)?;
+    let input_rows = drive(reader, &mut writer, predicate)?;
+    let mut summary = writer.finish()?;
+    summary.input_rows = input_rows;
+    Ok(summary)
+}
+
+/// Same as [`excerpt_csv_file`] but reads from any byte source — typically a
+/// streamed HTTP response from
+/// [`Downloader::stream_file`](crate::download::Downloader::stream_file), so the
+/// raw catalog never has to land on disk.
+pub fn excerpt_csv_reader<R, S, F>(
+    reader: Box<dyn std::io::Read>,
+    is_gz: bool,
+    mag_limit: f64,
+    output_dir: impl AsRef<Path>,
+    sharder: S,
+    predicate: F,
+) -> Result<ExcerptSummary>
+where
+    R: GaiaRelease,
+    S: ShardKey<R::Entry>,
+    F: FnMut(&R::Entry) -> bool,
+{
+    let reader = CsvSourceReader::<R>::from_reader(reader, is_gz, mag_limit)?;
+    let mut writer = ShardedCsvWriter::<R, S>::new(output_dir, sharder)?;
+    let input_rows = drive(reader, &mut writer, predicate)?;
+    let mut summary = writer.finish()?;
+    summary.input_rows = input_rows;
+    Ok(summary)
+}
+
+fn drive<R, S, F>(
+    reader: CsvSourceReader<R>,
+    writer: &mut ShardedCsvWriter<R, S>,
+    mut predicate: F,
+) -> Result<usize>
+where
+    R: GaiaRelease,
+    S: ShardKey<R::Entry>,
+    F: FnMut(&R::Entry) -> bool,
+{
+    let mut input_rows = 0usize;
     for entry in reader {
         let entry = entry?;
         input_rows += 1;
@@ -285,7 +326,5 @@ where
             writer.write(&entry)?;
         }
     }
-    let mut summary = writer.finish()?;
-    summary.input_rows = input_rows;
-    Ok(summary)
+    Ok(input_rows)
 }

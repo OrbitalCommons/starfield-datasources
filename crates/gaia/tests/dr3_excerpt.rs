@@ -172,6 +172,53 @@ fn id_range_shard_buckets_monotonically() {
 }
 
 #[test]
+fn excerpt_from_reader_streams_without_disk() {
+    // Build the same fixture rows in memory and feed an in-memory `Cursor`
+    // into `excerpt_csv_reader` — exercises the no-disk-input path that the
+    // CLI uses for streamed CDN downloads.
+    use starfield_gaia::excerpt::excerpt_csv_reader;
+    use std::io::Cursor;
+
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(HEADER.as_bytes());
+    bytes.push(b'\n');
+    for i in 0..50u64 {
+        let id = i.wrapping_mul(0x123_4567_89AB_CDEF);
+        let mag = 4.0 + (i as f64) * 0.05;
+        let row = row_from(&HashMap::from([
+            ("source_id", id.to_string().as_str()),
+            ("solution_id", "1635721458409799680"),
+            ("ref_epoch", "2016.0"),
+            ("ra", "10.0"),
+            ("ra_error", "0.04"),
+            ("dec", "20.0"),
+            ("dec_error", "0.04"),
+            ("l", "0.0"),
+            ("b", "0.0"),
+            ("ecl_lon", "0.0"),
+            ("ecl_lat", "0.0"),
+            ("phot_g_mean_mag", mag.to_string().as_str()),
+            ("phot_variable_flag", "NOT_AVAILABLE"),
+        ]));
+        bytes.extend_from_slice(row.as_bytes());
+        bytes.push(b'\n');
+    }
+    let cursor: Box<dyn std::io::Read> = Box::new(Cursor::new(bytes));
+    let out = tempfile::tempdir().unwrap();
+    let summary = excerpt_csv_reader::<Dr3, _, _>(
+        cursor,
+        false, // not gzipped
+        f64::INFINITY,
+        out.path(),
+        HashIdShard { num_shards: 4 },
+        |_| true,
+    )
+    .expect("excerpt from reader");
+    assert_eq!(summary.input_rows, 50);
+    assert_eq!(summary.kept_rows, 50);
+}
+
+#[test]
 fn healpix_shard_returns_in_range() {
     let s = HealpixShard {
         num_shards: 32,

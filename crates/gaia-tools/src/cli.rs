@@ -11,17 +11,43 @@ use std::path::PathBuf;
     about = "Subset and shard Gaia catalog files"
 )]
 pub struct Cli {
-    /// Input `.csv` or `.csv.gz` files (one or more).
-    #[arg(long = "input", required = true, num_args = 1..)]
+    /// Input `.csv` or `.csv.gz` files (one or more local paths). Mutually
+    /// exclusive with `--from-release`.
+    #[arg(long = "input", num_args = 1.., conflicts_with = "from_release")]
     pub input: Vec<PathBuf>,
+
+    /// Pull the inputs straight from ESA's CDN for the given release. Combined
+    /// with `--max-files N` to limit how many files are processed; default is
+    /// every file in the release. By default the raw bytes are streamed and
+    /// never written to disk; pass `--cache-raw` to keep them under the
+    /// per-release cache (`~/.cache/starfield/gaia/dr*/`).
+    #[arg(long = "from-release", value_enum, conflicts_with = "input")]
+    pub from_release: Option<ReleaseChoice>,
+
+    /// Maximum number of CDN files to process when `--from-release` is set.
+    #[arg(long = "max-files")]
+    pub max_files: Option<usize>,
+
+    /// When `--from-release` is set, write each downloaded raw file to the
+    /// per-release cache. Default streams the bytes through and discards the
+    /// raw to keep disk usage low.
+    #[arg(long = "cache-raw", default_value_t = false)]
+    pub cache_raw: bool,
+
+    /// Delete each `--input` file from disk after successful processing. Local
+    /// paths only; no-op on streamed CDN sources.
+    #[arg(long = "clean-after-excerpt", default_value_t = false)]
+    pub clean_after_excerpt: bool,
 
     /// Output directory for shard files. Created if missing.
     #[arg(long = "output-dir", short = 'o')]
     pub output_dir: PathBuf,
 
-    /// Which Gaia data release the inputs come from.
+    /// Which Gaia data release the inputs come from. Required when `--input`
+    /// is used; ignored when `--from-release` is used (the value is taken
+    /// from the `--from-release` flag).
     #[arg(long = "release", value_enum)]
-    pub release: ReleaseChoice,
+    pub release: Option<ReleaseChoice>,
 
     /// Sharding strategy.
     #[arg(long = "shard-by", value_enum, default_value_t = Sharder::Hash)]
@@ -63,6 +89,16 @@ pub enum ReleaseChoice {
     Dr1,
     Dr2,
     Dr3,
+}
+
+impl ReleaseChoice {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ReleaseChoice::Dr1 => "DR1",
+            ReleaseChoice::Dr2 => "DR2",
+            ReleaseChoice::Dr3 => "DR3",
+        }
+    }
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +145,30 @@ fn parse_cone(s: &str) -> Result<Cone> {
         dec_deg,
         radius_deg,
     })
+}
+
+impl Cli {
+    /// Resolve the effective release: `--from-release` if set, otherwise
+    /// `--release`, otherwise an error.
+    pub fn effective_release(&self) -> Result<ReleaseChoice> {
+        match (self.from_release, self.release) {
+            (Some(r), _) => Ok(r),
+            (None, Some(r)) => Ok(r),
+            (None, None) => Err(StarfieldError::DataError(
+                "must pass either --release (with --input) or --from-release (with CDN mode)"
+                    .into(),
+            )),
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.input.is_empty() && self.from_release.is_none() {
+            return Err(StarfieldError::DataError(
+                "must pass either --input <files> or --from-release <release>".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn parse_id_range(s: &str) -> Result<(u64, u64)> {

@@ -34,19 +34,25 @@ impl<R: GaiaRelease> Downloader<R> {
 
     /// List the filenames of every CSV file the remote index exposes.
     ///
-    /// Scrapes the HTML directory listing; returns filenames (not URLs).
+    /// ESA's user-facing URL (`cdn.gea.esac.esa.int`) is just a JS-rendered
+    /// file browser shell, so we paginate the underlying CDN77 S3-style XML
+    /// listing instead. Returns filenames matching `R::FILE_REGEX`, sorted
+    /// and deduplicated.
     pub fn list_remote() -> Result<Vec<String>> {
-        let client = build_http_client(60)?;
-        let response = check_response_status(
-            client.get(R::BASE_URL).send().map_err(|e| {
-                StarfieldError::DataError(format!("fetch {} index: {}", R::RELEASE.as_str(), e))
-            })?,
-            &format!("Gaia {} index", R::RELEASE.as_str()),
-        )?;
-        let html = response
-            .text()
-            .map_err(|e| StarfieldError::DataError(format!("read index body: {}", e)))?;
+        const CDN_HOST: &str = "https://cdn.gea.esac.esa.int/";
+        const INDEX_HOST: &str = "https://gaia.eu-1.cdn77-storage.com/";
+        let prefix = R::BASE_URL
+            .strip_prefix(CDN_HOST)
+            .ok_or_else(|| {
+                StarfieldError::DataError(format!(
+                    "BASE_URL {} doesn't start with the expected CDN host {}",
+                    R::BASE_URL,
+                    CDN_HOST
+                ))
+            })?
+            .to_string();
 
+        let client = build_http_client(60)?;
         let re = Regex::new(R::FILE_REGEX).map_err(|e| {
             StarfieldError::DataError(format!(
                 "compile file regex for {}: {}",
@@ -54,18 +60,54 @@ impl<R: GaiaRelease> Downloader<R> {
                 e
             ))
         })?;
-        let files: Vec<String> = re
-            .captures_iter(&html)
-            .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
-            .collect();
-        if files.is_empty() {
+
+        let mut all = std::collections::BTreeSet::new();
+        let mut marker = String::new();
+        for _page in 0..50 {
+            let url = if marker.is_empty() {
+                format!("{}?prefix={}&delimiter=/", INDEX_HOST, prefix)
+            } else {
+                format!(
+                    "{}?prefix={}&delimiter=/&marker={}",
+                    INDEX_HOST,
+                    prefix,
+                    urlencode(&marker),
+                )
+            };
+            let resp = check_response_status(
+                client.get(&url).send().map_err(|e| {
+                    StarfieldError::DataError(format!("fetch {} index: {}", R::RELEASE.as_str(), e))
+                })?,
+                &format!("Gaia {} index page", R::RELEASE.as_str()),
+            )?;
+            let body = resp
+                .text()
+                .map_err(|e| StarfieldError::DataError(format!("read index body: {}", e)))?;
+
+            let mut last_key = String::new();
+            for cap in re.captures_iter(&body) {
+                if let Some(m) = cap.get(1) {
+                    let name = m.as_str().to_string();
+                    last_key = format!("{}{}", prefix, name);
+                    all.insert(name);
+                }
+            }
+            let truncated = body.contains("<IsTruncated>true</IsTruncated>");
+            if !truncated || last_key.is_empty() {
+                break;
+            }
+            marker = last_key;
+        }
+
+        if all.is_empty() {
             return Err(StarfieldError::DataError(format!(
-                "no files matched FILE_REGEX for {} at {}",
+                "no files matched FILE_REGEX for {} at {} (prefix {})",
                 R::RELEASE.as_str(),
-                R::BASE_URL
+                INDEX_HOST,
+                prefix,
             )));
         }
-        Ok(files)
+        Ok(all.into_iter().collect())
     }
 
     /// Cached files on disk for this release.
@@ -133,6 +175,24 @@ impl<R: GaiaRelease> Downloader<R> {
         Ok(dest)
     }
 
+    /// Open a streaming HTTP read of a catalog file — returns a `Box<dyn Read>`
+    /// over the gzipped bytes. Use with [`CsvSourceReader::from_reader`](crate::common::reader::CsvSourceReader::from_reader)
+    /// to excerpt without ever writing the raw file to disk. Caller is
+    /// responsible for setting `is_gz=true` since CSV.gz is the only on-disk
+    /// format Gaia publishes for `gaia_source`.
+    pub fn stream_file(filename: &str) -> Result<Box<dyn Read + Send>> {
+        let url = format!("{}{}", R::BASE_URL, filename);
+        let client = build_http_client(600)?;
+        let resp = check_response_status(
+            client
+                .get(&url)
+                .send()
+                .map_err(|e| StarfieldError::DataError(format!("HTTP get {}: {}", url, e)))?,
+            &url,
+        )?;
+        Ok(Box::new(resp))
+    }
+
     /// Download every catalog file (optionally up to `max_files`). Failures on
     /// individual files are logged to stderr but do not abort the whole run.
     pub fn download_all(max_files: Option<usize>) -> Result<Vec<PathBuf>> {
@@ -156,6 +216,19 @@ impl<R: GaiaRelease> Downloader<R> {
         }
         Ok(out)
     }
+}
+
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
 }
 
 fn md5_hex(path: &Path) -> Result<String> {

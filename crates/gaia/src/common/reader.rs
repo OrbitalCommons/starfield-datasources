@@ -46,12 +46,26 @@ impl<R: GaiaRelease> CsvSourceReader<R> {
                 path.display()
             )));
         }
-
         let is_gz = path.extension().is_some_and(|e| e == "gz");
+        Self::from_reader(Box::new(file) as Box<dyn Read>, is_gz, mag_limit).map_err(|e| match e {
+            StarfieldError::DataError(msg) => {
+                StarfieldError::DataError(format!("{}: {}", path.display(), msg))
+            }
+            other => other,
+        })
+    }
+
+    /// Wire the reader to an arbitrary byte source — typically a streamed HTTP
+    /// response, so callers can excerpt without ever writing the raw catalog
+    /// to disk.
+    ///
+    /// Set `is_gz` true for gzipped streams (this wraps in `flate2::GzDecoder`).
+    /// `mag_limit` is applied per-row at the same point as in [`open`](Self::open).
+    pub fn from_reader(reader: Box<dyn Read>, is_gz: bool, mag_limit: f64) -> Result<Self> {
         let raw: Box<dyn Read> = if is_gz {
-            Box::new(BufReader::new(GzDecoder::new(BufReader::new(file))))
+            Box::new(BufReader::new(GzDecoder::new(BufReader::new(reader))))
         } else {
-            Box::new(BufReader::new(file))
+            Box::new(BufReader::new(reader))
         };
         let mut buf = BufReader::new(raw);
 
@@ -91,16 +105,21 @@ impl<R: GaiaRelease> CsvSourceReader<R> {
                     .position(|c| *c == f.name())
                     .ok_or_else(|| {
                         StarfieldError::DataError(format!(
-                            "gaia csv: missing column `{}` in {} (have {} columns)",
+                            "missing column `{}` (have {} columns)",
                             f.name(),
-                            path.display(),
                             csv_columns.len()
                         ))
                     })
             })
             .collect::<Result<_>>()?;
 
-        let format = Format::default().with_header(false);
+        // Empty string OR literal "null" → arrow-csv treats as null. DR1/DR2
+        // CSVs use empty cells; DR3 ECSV uses the literal "null" token.
+        let null_re = regex::Regex::new(r"^(null)?$")
+            .map_err(|e| StarfieldError::DataError(format!("compile null regex: {}", e)))?;
+        let format = Format::default()
+            .with_header(false)
+            .with_null_regex(null_re);
         let reader = ReaderBuilder::new(full_schema)
             .with_format(format)
             .with_batch_size(BATCH_SIZE)
