@@ -59,7 +59,7 @@ impl GaiaRelease for Dr3 {
             b: req_f64(batch, c.b, row)?,
             ecl_lon: req_f64(batch, c.ecl_lon, row)?,
             ecl_lat: req_f64(batch, c.ecl_lat, row)?,
-            phot_g_mean_mag: req_f64(batch, c.phot_g_mean_mag, row)?,
+            phot_g_mean_mag: opt_f64(batch, c.phot_g_mean_mag, row)?.unwrap_or(f64::INFINITY),
             phot_g_mean_flux: opt_f64(batch, c.phot_g_mean_flux, row)?,
             phot_g_mean_flux_error: opt_f64(batch, c.phot_g_mean_flux_error, row)?,
             phot_g_n_obs: opt_u32(batch, c.phot_g_n_obs, row)?,
@@ -71,7 +71,7 @@ impl GaiaRelease for Dr3 {
             astrometric_excess_noise_sig: opt_f64(batch, c.astrometric_excess_noise_sig, row)?,
             astrometric_primary_flag: opt_bool(batch, c.astrometric_primary_flag, row)?,
             duplicated_source: opt_bool(batch, c.duplicated_source, row)?,
-            matched_observations: opt_u32(batch, c.matched_observations, row)?,
+            matched_observations: None, // DR3 dropped this column; use astrometric_matched_transits if needed
         };
 
         let astrometric_extra = AstrometricExtra {
@@ -233,7 +233,6 @@ impl GaiaRelease for Dr3 {
             fopt(c.astrometric_excess_noise_sig),
             fopt_bool(c.astrometric_primary_flag).to_string(),
             fopt_bool(c.duplicated_source).to_string(),
-            fopt(c.matched_observations),
             fopt(ax.astrometric_n_good_obs_al),
             fopt(ax.astrometric_n_bad_obs_al),
             fopt(ax.astrometric_gof_al),
@@ -355,7 +354,7 @@ static COLUMNS: &[ColSpec] = &[
     ColSpec::req("b", DataType::Float64),
     ColSpec::req("ecl_lon", DataType::Float64),
     ColSpec::req("ecl_lat", DataType::Float64),
-    ColSpec::req("phot_g_mean_mag", DataType::Float64),
+    ColSpec::opt("phot_g_mean_mag", DataType::Float64),
     ColSpec::opt("phot_g_mean_flux", DataType::Float64),
     ColSpec::opt("phot_g_mean_flux_error", DataType::Float64),
     ColSpec::opt("phot_g_n_obs", DataType::Int32),
@@ -365,7 +364,6 @@ static COLUMNS: &[ColSpec] = &[
     ColSpec::opt("astrometric_excess_noise_sig", DataType::Float64),
     ColSpec::opt("astrometric_primary_flag", DataType::Boolean),
     ColSpec::opt("duplicated_source", DataType::Boolean),
-    ColSpec::opt("matched_observations", DataType::Int32),
     ColSpec::opt("astrometric_n_good_obs_al", DataType::Int32),
     ColSpec::opt("astrometric_n_bad_obs_al", DataType::Int32),
     ColSpec::opt("astrometric_gof_al", DataType::Float32),
@@ -465,7 +463,6 @@ struct ColIdx {
     astrometric_excess_noise_sig: usize,
     astrometric_primary_flag: usize,
     duplicated_source: usize,
-    matched_observations: usize,
     astrometric_n_good_obs_al: usize,
     astrometric_n_bad_obs_al: usize,
     astrometric_gof_al: usize,
@@ -569,7 +566,6 @@ impl ColIdx {
             astrometric_excess_noise_sig: it.next().unwrap(),
             astrometric_primary_flag: it.next().unwrap(),
             duplicated_source: it.next().unwrap(),
-            matched_observations: it.next().unwrap(),
             astrometric_n_good_obs_al: it.next().unwrap(),
             astrometric_n_bad_obs_al: it.next().unwrap(),
             astrometric_gof_al: it.next().unwrap(),

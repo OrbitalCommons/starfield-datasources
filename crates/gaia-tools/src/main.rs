@@ -1,6 +1,6 @@
-//! `gaia-excerpt` — apply a predicate to one or more Gaia CSV(.gz) files and
-//! write the kept entries to sharded gzipped CSVs that round-trip through
-//! `Dr{1,2,3}Catalog::from_csv_file`.
+//! `gaia-excerpt` — apply a predicate to one or more Gaia CSV(.gz) files
+//! (local paths or streamed from ESA's CDN) and write the kept entries to
+//! sharded gzipped CSVs that round-trip through `Dr{1,2,3}Catalog::from_csv_file`.
 
 fn main() {
     if let Err(e) = run() {
@@ -14,47 +14,95 @@ mod sort_step;
 
 use cli::{Cli, ReleaseChoice, Sharder};
 use indicatif::{ProgressBar, ProgressStyle};
-use starfield::Result;
+use starfield::{Result, StarfieldError};
+use starfield_gaia::download::Downloader;
 use starfield_gaia::excerpt::{
-    excerpt_csv_file, ExcerptSummary, HashIdShard, HealpixShard, IdRangeShard,
+    excerpt_csv_file, excerpt_csv_reader, ExcerptSummary, HashIdShard, HealpixShard, IdRangeShard,
 };
 use starfield_gaia::{Dr1, Dr2, Dr3, GaiaRelease, GaiaSource};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn run() -> Result<()> {
     use clap::Parser;
     let args = Cli::parse();
+    args.validate()?;
+    let release = args.effective_release()?;
 
     let multi = indicatif::MultiProgress::new();
-    let file_pb = multi.add(ProgressBar::new(args.input.len() as u64));
-    file_pb.set_style(
-        ProgressStyle::with_template(
-            "[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} input files ({eta})",
-        )
-        .unwrap(),
-    );
-
     let kept_pb = multi.add(ProgressBar::new_spinner());
     kept_pb.set_style(
         ProgressStyle::with_template("  kept: {pos} stars across {msg} shards").unwrap(),
     );
 
     let mut totals = Totals::default();
-    for input in &args.input {
-        match args.release {
-            ReleaseChoice::Dr1 => run_one::<Dr1>(input, &args, &mut totals, &kept_pb)?,
-            ReleaseChoice::Dr2 => run_one::<Dr2>(input, &args, &mut totals, &kept_pb)?,
-            ReleaseChoice::Dr3 => run_one::<Dr3>(input, &args, &mut totals, &kept_pb)?,
+
+    if !args.input.is_empty() {
+        let file_pb = multi.add(ProgressBar::new(args.input.len() as u64));
+        file_pb.set_style(
+            ProgressStyle::with_template(
+                "[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} input files ({eta})",
+            )
+            .unwrap(),
+        );
+        for input in &args.input {
+            match release {
+                ReleaseChoice::Dr1 => run_local::<Dr1>(input, &args, &mut totals, &kept_pb)?,
+                ReleaseChoice::Dr2 => run_local::<Dr2>(input, &args, &mut totals, &kept_pb)?,
+                ReleaseChoice::Dr3 => run_local::<Dr3>(input, &args, &mut totals, &kept_pb)?,
+            }
+            if args.clean_after_excerpt {
+                std::fs::remove_file(input).map_err(StarfieldError::IoError)?;
+            }
+            file_pb.inc(1);
         }
-        file_pb.inc(1);
+        file_pb.finish_with_message("done");
+    } else {
+        // CDN mode: enumerate, then per-file stream-or-cache.
+        let names = match release {
+            ReleaseChoice::Dr1 => Downloader::<Dr1>::list_remote()?,
+            ReleaseChoice::Dr2 => Downloader::<Dr2>::list_remote()?,
+            ReleaseChoice::Dr3 => Downloader::<Dr3>::list_remote()?,
+        };
+        let total_files = args.max_files.unwrap_or(names.len()).min(names.len());
+        eprintln!(
+            "fetching {} of {} {} files from CDN ({})",
+            total_files,
+            names.len(),
+            release.as_str(),
+            if args.cache_raw {
+                "writing raw to cache"
+            } else {
+                "streaming, no raw on disk"
+            },
+        );
+        let file_pb = multi.add(ProgressBar::new(total_files as u64));
+        file_pb.set_style(
+            ProgressStyle::with_template(
+                "[{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} CDN files ({eta})",
+            )
+            .unwrap(),
+        );
+        for name in names.iter().take(total_files) {
+            match release {
+                ReleaseChoice::Dr1 => run_cdn::<Dr1>(name, &args, &mut totals, &kept_pb)?,
+                ReleaseChoice::Dr2 => run_cdn::<Dr2>(name, &args, &mut totals, &kept_pb)?,
+                ReleaseChoice::Dr3 => run_cdn::<Dr3>(name, &args, &mut totals, &kept_pb)?,
+            }
+            file_pb.inc(1);
+        }
+        file_pb.finish_with_message("done");
     }
-    file_pb.finish_with_message("done");
     kept_pb.finish_and_clear();
 
+    let inputs_processed = if args.input.is_empty() {
+        args.max_files.unwrap_or(0)
+    } else {
+        args.input.len()
+    };
     println!(
         "read {} stars across {} files; kept {} ({:.2}%); wrote {} shard files",
         totals.input_rows,
-        args.input.len(),
+        inputs_processed,
         totals.kept_rows,
         if totals.input_rows == 0 {
             0.0
@@ -78,7 +126,7 @@ fn run() -> Result<()> {
             .unwrap(),
         );
         for path in &totals.distinct_shard_files {
-            match args.release {
+            match release {
                 ReleaseChoice::Dr1 => sort_step::sort_shard::<Dr1>(path, args.sort_by)?,
                 ReleaseChoice::Dr2 => sort_step::sort_shard::<Dr2>(path, args.sort_by)?,
                 ReleaseChoice::Dr3 => sort_step::sort_shard::<Dr3>(path, args.sort_by)?,
@@ -98,7 +146,7 @@ struct Totals {
     distinct_shard_files: Vec<PathBuf>,
 }
 
-fn run_one<R>(input: &PathBuf, args: &Cli, totals: &mut Totals, kept_pb: &ProgressBar) -> Result<()>
+fn run_local<R>(input: &Path, args: &Cli, totals: &mut Totals, kept_pb: &ProgressBar) -> Result<()>
 where
     R: GaiaRelease,
 {
@@ -132,6 +180,88 @@ where
             },
             predicate,
         )?,
+    };
+    accumulate(totals, summary, kept_pb);
+    Ok(())
+}
+
+fn run_cdn<R>(filename: &str, args: &Cli, totals: &mut Totals, kept_pb: &ProgressBar) -> Result<()>
+where
+    R: GaiaRelease,
+{
+    let predicate = build_predicate::<R::Entry>(args)?;
+
+    // Pick the byte source: cached or streamed.
+    let summary = if args.cache_raw {
+        let path = Downloader::<R>::download_file(filename)?;
+        match args.shard_by {
+            Sharder::Hash => excerpt_csv_file::<R, _, _>(
+                &path,
+                args.mag_limit.unwrap_or(f64::INFINITY),
+                &args.output_dir,
+                HashIdShard {
+                    num_shards: args.shards,
+                },
+                predicate,
+            )?,
+            Sharder::IdRange => excerpt_csv_file::<R, _, _>(
+                &path,
+                args.mag_limit.unwrap_or(f64::INFINITY),
+                &args.output_dir,
+                IdRangeShard {
+                    num_shards: args.shards,
+                },
+                predicate,
+            )?,
+            Sharder::Healpix => excerpt_csv_file::<R, _, _>(
+                &path,
+                args.mag_limit.unwrap_or(f64::INFINITY),
+                &args.output_dir,
+                HealpixShard {
+                    num_shards: args.shards,
+                    level: args.healpix_level,
+                },
+                predicate,
+            )?,
+        }
+    } else {
+        let stream = Downloader::<R>::stream_file(filename)?;
+        // Filenames come from the index regex which targets `*.csv.gz` only,
+        // so is_gz is always true for CDN-sourced files.
+        let is_gz = filename.ends_with(".gz");
+        match args.shard_by {
+            Sharder::Hash => excerpt_csv_reader::<R, _, _>(
+                stream,
+                is_gz,
+                args.mag_limit.unwrap_or(f64::INFINITY),
+                &args.output_dir,
+                HashIdShard {
+                    num_shards: args.shards,
+                },
+                predicate,
+            )?,
+            Sharder::IdRange => excerpt_csv_reader::<R, _, _>(
+                stream,
+                is_gz,
+                args.mag_limit.unwrap_or(f64::INFINITY),
+                &args.output_dir,
+                IdRangeShard {
+                    num_shards: args.shards,
+                },
+                predicate,
+            )?,
+            Sharder::Healpix => excerpt_csv_reader::<R, _, _>(
+                stream,
+                is_gz,
+                args.mag_limit.unwrap_or(f64::INFINITY),
+                &args.output_dir,
+                HealpixShard {
+                    num_shards: args.shards,
+                    level: args.healpix_level,
+                },
+                predicate,
+            )?,
+        }
     };
     accumulate(totals, summary, kept_pb);
     Ok(())

@@ -55,7 +55,9 @@ impl GaiaRelease for Dr1 {
             b: req_f64(batch, c.b, row)?,
             ecl_lon: req_f64(batch, c.ecl_lon, row)?,
             ecl_lat: req_f64(batch, c.ecl_lat, row)?,
-            phot_g_mean_mag: req_f64(batch, c.phot_g_mean_mag, row)?,
+            // Sources without G-band photometry (rare) get INFINITY so any finite
+            // `--mag-limit` filters them out.
+            phot_g_mean_mag: opt_f64(batch, c.phot_g_mean_mag, row)?.unwrap_or(f64::INFINITY),
             phot_g_mean_flux: opt_f64(batch, c.phot_g_mean_flux, row)?,
             phot_g_mean_flux_error: opt_f64(batch, c.phot_g_mean_flux_error, row)?,
             phot_g_n_obs: opt_u32(batch, c.phot_g_n_obs, row)?,
@@ -207,7 +209,7 @@ static COLUMNS: &[ColSpec] = &[
     ColSpec::req("b", DataType::Float64),
     ColSpec::req("ecl_lon", DataType::Float64),
     ColSpec::req("ecl_lat", DataType::Float64),
-    ColSpec::req("phot_g_mean_mag", DataType::Float64),
+    ColSpec::opt("phot_g_mean_mag", DataType::Float64),
     ColSpec::opt("phot_g_mean_flux", DataType::Float64),
     ColSpec::opt("phot_g_mean_flux_error", DataType::Float64),
     ColSpec::opt("phot_g_n_obs", DataType::Int32),
