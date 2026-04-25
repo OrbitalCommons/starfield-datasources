@@ -56,6 +56,17 @@ pub trait ShardKey<E> {
     fn shard_of(&self, entry: &E) -> u32;
 }
 
+/// Forwarding impl so callers can hold a `Box<dyn ShardKey<E>>` and pass it
+/// where a `S: ShardKey<E>` is required (e.g. into [`ShardedCsvWriter::new`]).
+impl<E, S: ?Sized + ShardKey<E>> ShardKey<E> for Box<S> {
+    fn num_shards(&self) -> u32 {
+        (**self).num_shards()
+    }
+    fn shard_of(&self, entry: &E) -> u32 {
+        (**self).shard_of(entry)
+    }
+}
+
 /// Shard by `hash(source_id) % num_shards`. Roughly even distribution; loses
 /// any spatial / brightness locality. Use when you want shards of similar
 /// size for parallel processing.
@@ -204,6 +215,13 @@ impl<R: GaiaRelease, S: ShardKey<R::Entry>> ShardedCsvWriter<R, S> {
         Ok(())
     }
 
+    /// Total rows written so far across every shard. Useful for progress
+    /// reporting and for the CLI's "did this attempt commit anything?" check
+    /// when deciding whether a transient HTTP failure is safe to retry.
+    pub fn kept_so_far(&self) -> u64 {
+        self.counts.iter().sum()
+    }
+
     /// Finalize: flush every open shard file and return a summary.
     pub fn finish(mut self) -> Result<ExcerptSummary> {
         for w in self.writers.iter_mut() {
@@ -308,7 +326,12 @@ where
     Ok(summary)
 }
 
-fn drive<R, S, F>(
+/// Stream `reader` through `predicate` into an existing `writer`. Returns the
+/// number of input rows seen (post-mag-limit, pre-predicate). Use this when you
+/// have multiple input files that should write into a single shared output set
+/// — calling [`excerpt_csv_file`] once per input file would `File::create`-truncate
+/// every shard each time, losing all but the last input's data per shard.
+pub fn drive<R, S, F>(
     reader: CsvSourceReader<R>,
     writer: &mut ShardedCsvWriter<R, S>,
     mut predicate: F,
@@ -327,4 +350,40 @@ where
         }
     }
     Ok(input_rows)
+}
+
+/// `excerpt_csv_file` variant that uses an *existing* writer (so multi-file
+/// runs can stream into one shared shard set). Returns the number of input
+/// rows seen.
+pub fn excerpt_csv_file_into<R, S, F>(
+    input_path: impl AsRef<Path>,
+    mag_limit: f64,
+    writer: &mut ShardedCsvWriter<R, S>,
+    predicate: F,
+) -> Result<usize>
+where
+    R: GaiaRelease,
+    S: ShardKey<R::Entry>,
+    F: FnMut(&R::Entry) -> bool,
+{
+    let reader = CsvSourceReader::<R>::open(input_path, mag_limit)?;
+    drive(reader, writer, predicate)
+}
+
+/// `excerpt_csv_reader` variant that uses an *existing* writer. Same multi-file
+/// rationale as [`excerpt_csv_file_into`].
+pub fn excerpt_csv_reader_into<R, S, F>(
+    reader: Box<dyn std::io::Read>,
+    is_gz: bool,
+    mag_limit: f64,
+    writer: &mut ShardedCsvWriter<R, S>,
+    predicate: F,
+) -> Result<usize>
+where
+    R: GaiaRelease,
+    S: ShardKey<R::Entry>,
+    F: FnMut(&R::Entry) -> bool,
+{
+    let reader = CsvSourceReader::<R>::from_reader(reader, is_gz, mag_limit)?;
+    drive(reader, writer, predicate)
 }

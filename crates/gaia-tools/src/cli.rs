@@ -34,8 +34,12 @@ pub struct Cli {
     #[arg(long = "cache-raw", default_value_t = false)]
     pub cache_raw: bool,
 
-    /// Delete each `--input` file from disk after successful processing. Local
-    /// paths only; no-op on streamed CDN sources.
+    /// Delete each input file from disk once it has been successfully
+    /// extracted. Applies to both `--input` local paths AND `--from-release
+    /// --cache-raw` CDN-cached files (which makes that mode "stage to disk,
+    /// extract, evict" — bounded steady-state disk for the raw bytes).
+    /// No-op for `--from-release` without `--cache-raw` (streaming mode
+    /// never stages anything to disk in the first place).
     #[arg(long = "clean-after-excerpt", default_value_t = false)]
     pub clean_after_excerpt: bool,
 

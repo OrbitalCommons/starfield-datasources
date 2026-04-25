@@ -17,10 +17,12 @@ use indicatif::{ProgressBar, ProgressStyle};
 use starfield::{Result, StarfieldError};
 use starfield_gaia::download::Downloader;
 use starfield_gaia::excerpt::{
-    excerpt_csv_file, excerpt_csv_reader, ExcerptSummary, HashIdShard, HealpixShard, IdRangeShard,
+    excerpt_csv_file_into, excerpt_csv_reader_into, HashIdShard, HealpixShard, IdRangeShard,
+    ShardKey, ShardedCsvWriter,
 };
 use starfield_gaia::{Dr1, Dr2, Dr3, GaiaRelease, GaiaSource};
-use std::path::{Path, PathBuf};
+
+const MAX_CONNECT_RETRIES: u32 = 4; // total 5 attempts
 
 fn run() -> Result<()> {
     use clap::Parser;
@@ -28,13 +30,32 @@ fn run() -> Result<()> {
     args.validate()?;
     let release = args.effective_release()?;
 
+    // Dispatch on release exactly once so the writer can live across every
+    // input file in the run. (Previously the per-file `excerpt_csv_file`
+    // convenience constructed a fresh writer each time, which `File::create`-
+    // truncated every shard it touched and silently lost data.)
+    match release {
+        ReleaseChoice::Dr1 => run_release::<Dr1>(&args),
+        ReleaseChoice::Dr2 => run_release::<Dr2>(&args),
+        ReleaseChoice::Dr3 => run_release::<Dr3>(&args),
+    }
+}
+
+fn run_release<R: GaiaRelease>(args: &Cli) -> Result<()> {
+    let mag_limit = args.mag_limit.unwrap_or(f64::INFINITY);
+
+    let sharder = make_sharder::<R::Entry>(args);
+    let mut writer =
+        ShardedCsvWriter::<R, Box<dyn ShardKey<R::Entry>>>::new(&args.output_dir, sharder)?;
+    let mut predicate = build_predicate::<R::Entry>(args)?;
+
     let multi = indicatif::MultiProgress::new();
     let kept_pb = multi.add(ProgressBar::new_spinner());
     kept_pb.set_style(
-        ProgressStyle::with_template("  kept: {pos} stars across {msg} shards").unwrap(),
+        ProgressStyle::with_template("  kept: {pos} stars (across all shards)").unwrap(),
     );
 
-    let mut totals = Totals::default();
+    let mut input_rows_total: usize = 0;
 
     if !args.input.is_empty() {
         let file_pb = multi.add(ProgressBar::new(args.input.len() as u64));
@@ -45,30 +66,25 @@ fn run() -> Result<()> {
             .unwrap(),
         );
         for input in &args.input {
-            match release {
-                ReleaseChoice::Dr1 => run_local::<Dr1>(input, &args, &mut totals, &kept_pb)?,
-                ReleaseChoice::Dr2 => run_local::<Dr2>(input, &args, &mut totals, &kept_pb)?,
-                ReleaseChoice::Dr3 => run_local::<Dr3>(input, &args, &mut totals, &kept_pb)?,
-            }
+            let rows =
+                excerpt_csv_file_into::<R, _, _>(input, mag_limit, &mut writer, &mut predicate)?;
+            input_rows_total += rows;
             if args.clean_after_excerpt {
                 std::fs::remove_file(input).map_err(StarfieldError::IoError)?;
             }
+            kept_pb.set_position(writer.kept_so_far());
             file_pb.inc(1);
         }
         file_pb.finish_with_message("done");
     } else {
-        // CDN mode: enumerate, then per-file stream-or-cache.
-        let names = match release {
-            ReleaseChoice::Dr1 => Downloader::<Dr1>::list_remote()?,
-            ReleaseChoice::Dr2 => Downloader::<Dr2>::list_remote()?,
-            ReleaseChoice::Dr3 => Downloader::<Dr3>::list_remote()?,
-        };
+        // CDN mode: enumerate, then per-file streamed-or-cached with retry.
+        let names = Downloader::<R>::list_remote()?;
         let total_files = args.max_files.unwrap_or(names.len()).min(names.len());
         eprintln!(
             "fetching {} of {} {} files from CDN ({})",
             total_files,
             names.len(),
-            release.as_str(),
+            release_label::<R>(),
             if args.cache_raw {
                 "writing raw to cache"
             } else {
@@ -82,55 +98,101 @@ fn run() -> Result<()> {
             )
             .unwrap(),
         );
-        for name in names.iter().take(total_files) {
-            match release {
-                ReleaseChoice::Dr1 => run_cdn::<Dr1>(name, &args, &mut totals, &kept_pb)?,
-                ReleaseChoice::Dr2 => run_cdn::<Dr2>(name, &args, &mut totals, &kept_pb)?,
-                ReleaseChoice::Dr3 => run_cdn::<Dr3>(name, &args, &mut totals, &kept_pb)?,
+        let mut skipped: Vec<(String, String)> = Vec::new();
+        let mut partial: Vec<String> = Vec::new();
+
+        for (idx, name) in names.iter().take(total_files).enumerate() {
+            let outcome = retry_one_file::<R>(
+                idx,
+                total_files,
+                name,
+                args,
+                mag_limit,
+                &mut writer,
+                &mut predicate,
+                &mut input_rows_total,
+            );
+            match outcome {
+                FileOutcome::Ok => {}
+                FileOutcome::PartialMidStream { rows_written, err } => {
+                    eprintln!(
+                        "[{}/{}] {}: mid-stream failure after {} rows kept ({}); \
+                         continuing with partial data from this file",
+                        idx + 1,
+                        total_files,
+                        name,
+                        rows_written,
+                        err
+                    );
+                    partial.push(name.clone());
+                }
+                FileOutcome::GivingUp { attempts, err } => {
+                    eprintln!(
+                        "[{}/{}] {}: giving up after {} connect attempts ({})",
+                        idx + 1,
+                        total_files,
+                        name,
+                        attempts,
+                        err
+                    );
+                    skipped.push((name.clone(), err));
+                }
             }
+            kept_pb.set_position(writer.kept_so_far());
             file_pb.inc(1);
         }
         file_pb.finish_with_message("done");
+
+        if !partial.is_empty() {
+            eprintln!(
+                "\n{} files had mid-stream failures (some rows may be missing from shards):",
+                partial.len()
+            );
+            for p in &partial {
+                eprintln!("  - {}", p);
+            }
+        }
+        if !skipped.is_empty() {
+            eprintln!(
+                "\n{} files never completed a single successful connect:",
+                skipped.len()
+            );
+            for (p, err) in &skipped {
+                eprintln!("  - {}  ({})", p, err);
+            }
+        }
     }
     kept_pb.finish_and_clear();
 
-    let inputs_processed = if args.input.is_empty() {
-        args.max_files.unwrap_or(0)
-    } else {
-        args.input.len()
-    };
+    let summary = writer.finish()?;
+    let written: Vec<_> = summary.written_paths().cloned().collect();
     println!(
-        "read {} stars across {} files; kept {} ({:.2}%); wrote {} shard files",
-        totals.input_rows,
-        inputs_processed,
-        totals.kept_rows,
-        if totals.input_rows == 0 {
+        "read {} stars; kept {} ({:.2}%); wrote {} shard files",
+        input_rows_total,
+        summary.kept_rows,
+        if input_rows_total == 0 {
             0.0
         } else {
-            100.0 * totals.kept_rows as f64 / totals.input_rows as f64
+            100.0 * summary.kept_rows as f64 / input_rows_total as f64
         },
-        totals.distinct_shard_files.len(),
+        written.len(),
     );
 
     if args.sort {
         eprintln!(
             "\nsorting {} shard files by {:?} ...",
-            totals.distinct_shard_files.len(),
+            written.len(),
             args.sort_by
         );
-        let sort_pb = ProgressBar::new(totals.distinct_shard_files.len() as u64);
+        let sort_pb = ProgressBar::new(written.len() as u64);
         sort_pb.set_style(
             ProgressStyle::with_template(
                 "[{elapsed_precise}] {bar:40.green/blue} {pos}/{len} sorted ({eta})",
             )
             .unwrap(),
         );
-        for path in &totals.distinct_shard_files {
-            match release {
-                ReleaseChoice::Dr1 => sort_step::sort_shard::<Dr1>(path, args.sort_by)?,
-                ReleaseChoice::Dr2 => sort_step::sort_shard::<Dr2>(path, args.sort_by)?,
-                ReleaseChoice::Dr3 => sort_step::sort_shard::<Dr3>(path, args.sort_by)?,
-            }
+        for path in &written {
+            sort_step::sort_shard::<R>(path, args.sort_by)?;
             sort_pb.inc(1);
         }
         sort_pb.finish_with_message("sorted");
@@ -139,144 +201,128 @@ fn run() -> Result<()> {
     Ok(())
 }
 
-#[derive(Default)]
-struct Totals {
-    input_rows: usize,
-    kept_rows: u64,
-    distinct_shard_files: Vec<PathBuf>,
+fn release_label<R: GaiaRelease>() -> &'static str {
+    match R::RELEASE {
+        starfield_gaia::Release::Dr1 => "DR1",
+        starfield_gaia::Release::Dr2 => "DR2",
+        starfield_gaia::Release::Dr3 => "DR3",
+    }
 }
 
-fn run_local<R>(input: &Path, args: &Cli, totals: &mut Totals, kept_pb: &ProgressBar) -> Result<()>
+fn make_sharder<E: GaiaSource + 'static>(args: &Cli) -> Box<dyn ShardKey<E>> {
+    match args.shard_by {
+        Sharder::Hash => Box::new(HashIdShard {
+            num_shards: args.shards,
+        }),
+        Sharder::IdRange => Box::new(IdRangeShard {
+            num_shards: args.shards,
+        }),
+        Sharder::Healpix => Box::new(HealpixShard {
+            num_shards: args.shards,
+            level: args.healpix_level,
+        }),
+    }
+}
+
+/// Outcome of one (retried) CDN file. `Ok` = file fully processed. `PartialMidStream`
+/// = the HTTP body errored mid-read after some rows had already been written to
+/// shards; we don't retry (would duplicate those rows) and move on. `GivingUp` =
+/// failed before a single row was kept and exhausted retries.
+enum FileOutcome {
+    Ok,
+    PartialMidStream { rows_written: u64, err: String },
+    GivingUp { attempts: u32, err: String },
+}
+
+#[allow(clippy::too_many_arguments)]
+fn retry_one_file<R>(
+    idx: usize,
+    total: usize,
+    name: &str,
+    args: &Cli,
+    mag_limit: f64,
+    writer: &mut ShardedCsvWriter<R, Box<dyn ShardKey<R::Entry>>>,
+    predicate: &mut BoxedPredicate<R::Entry>,
+    input_rows_total: &mut usize,
+) -> FileOutcome
 where
     R: GaiaRelease,
 {
-    let predicate = build_predicate::<R::Entry>(args)?;
-    let summary = match args.shard_by {
-        Sharder::Hash => excerpt_csv_file::<R, _, _>(
-            input,
-            args.mag_limit.unwrap_or(f64::INFINITY),
-            &args.output_dir,
-            HashIdShard {
-                num_shards: args.shards,
-            },
-            predicate,
-        )?,
-        Sharder::IdRange => excerpt_csv_file::<R, _, _>(
-            input,
-            args.mag_limit.unwrap_or(f64::INFINITY),
-            &args.output_dir,
-            IdRangeShard {
-                num_shards: args.shards,
-            },
-            predicate,
-        )?,
-        Sharder::Healpix => excerpt_csv_file::<R, _, _>(
-            input,
-            args.mag_limit.unwrap_or(f64::INFINITY),
-            &args.output_dir,
-            HealpixShard {
-                num_shards: args.shards,
-                level: args.healpix_level,
-            },
-            predicate,
-        )?,
-    };
-    accumulate(totals, summary, kept_pb);
-    Ok(())
-}
-
-fn run_cdn<R>(filename: &str, args: &Cli, totals: &mut Totals, kept_pb: &ProgressBar) -> Result<()>
-where
-    R: GaiaRelease,
-{
-    let predicate = build_predicate::<R::Entry>(args)?;
-
-    // Pick the byte source: cached or streamed.
-    let summary = if args.cache_raw {
-        let path = Downloader::<R>::download_file(filename)?;
-        match args.shard_by {
-            Sharder::Hash => excerpt_csv_file::<R, _, _>(
-                &path,
-                args.mag_limit.unwrap_or(f64::INFINITY),
-                &args.output_dir,
-                HashIdShard {
-                    num_shards: args.shards,
-                },
-                predicate,
-            )?,
-            Sharder::IdRange => excerpt_csv_file::<R, _, _>(
-                &path,
-                args.mag_limit.unwrap_or(f64::INFINITY),
-                &args.output_dir,
-                IdRangeShard {
-                    num_shards: args.shards,
-                },
-                predicate,
-            )?,
-            Sharder::Healpix => excerpt_csv_file::<R, _, _>(
-                &path,
-                args.mag_limit.unwrap_or(f64::INFINITY),
-                &args.output_dir,
-                HealpixShard {
-                    num_shards: args.shards,
-                    level: args.healpix_level,
-                },
-                predicate,
-            )?,
-        }
-    } else {
-        let stream = Downloader::<R>::stream_file(filename)?;
-        // Filenames come from the index regex which targets `*.csv.gz` only,
-        // so is_gz is always true for CDN-sourced files.
-        let is_gz = filename.ends_with(".gz");
-        match args.shard_by {
-            Sharder::Hash => excerpt_csv_reader::<R, _, _>(
-                stream,
-                is_gz,
-                args.mag_limit.unwrap_or(f64::INFINITY),
-                &args.output_dir,
-                HashIdShard {
-                    num_shards: args.shards,
-                },
-                predicate,
-            )?,
-            Sharder::IdRange => excerpt_csv_reader::<R, _, _>(
-                stream,
-                is_gz,
-                args.mag_limit.unwrap_or(f64::INFINITY),
-                &args.output_dir,
-                IdRangeShard {
-                    num_shards: args.shards,
-                },
-                predicate,
-            )?,
-            Sharder::Healpix => excerpt_csv_reader::<R, _, _>(
-                stream,
-                is_gz,
-                args.mag_limit.unwrap_or(f64::INFINITY),
-                &args.output_dir,
-                HealpixShard {
-                    num_shards: args.shards,
-                    level: args.healpix_level,
-                },
-                predicate,
-            )?,
-        }
-    };
-    accumulate(totals, summary, kept_pb);
-    Ok(())
-}
-
-fn accumulate(totals: &mut Totals, s: ExcerptSummary, kept_pb: &ProgressBar) {
-    totals.input_rows += s.input_rows;
-    totals.kept_rows += s.kept_rows;
-    for p in s.written_paths() {
-        if !totals.distinct_shard_files.iter().any(|x| x == p) {
-            totals.distinct_shard_files.push(p.clone());
+    for attempt in 0..=MAX_CONNECT_RETRIES {
+        let kept_before = writer.kept_so_far();
+        let res: Result<usize> = if args.cache_raw {
+            match Downloader::<R>::download_file(name) {
+                Ok(path) => {
+                    let extract =
+                        excerpt_csv_file_into::<R, _, _>(&path, mag_limit, writer, &mut *predicate);
+                    // On successful extract, optionally evict the cached raw
+                    // file so disk usage stays bounded (one file in flight).
+                    // Failure to delete is a warning, not an error — the
+                    // rows are already committed to shards.
+                    if extract.is_ok() && args.clean_after_excerpt {
+                        if let Err(e) = std::fs::remove_file(&path) {
+                            eprintln!(
+                                "[{}/{}] {}: warn: extract ok but failed to evict {}: {}",
+                                idx + 1,
+                                total,
+                                name,
+                                path.display(),
+                                e
+                            );
+                        }
+                    }
+                    extract
+                }
+                Err(e) => Err(e),
+            }
+        } else {
+            match Downloader::<R>::stream_file(name) {
+                Ok(stream) => excerpt_csv_reader_into::<R, _, _>(
+                    stream,
+                    true,
+                    mag_limit,
+                    writer,
+                    &mut *predicate,
+                ),
+                Err(e) => Err(e),
+            }
+        };
+        match res {
+            Ok(rows) => {
+                *input_rows_total += rows;
+                return FileOutcome::Ok;
+            }
+            Err(e) => {
+                let err_str = e.to_string();
+                let rows_written = writer.kept_so_far().saturating_sub(kept_before);
+                if rows_written > 0 {
+                    return FileOutcome::PartialMidStream {
+                        rows_written,
+                        err: err_str,
+                    };
+                }
+                if attempt == MAX_CONNECT_RETRIES {
+                    return FileOutcome::GivingUp {
+                        attempts: attempt + 1,
+                        err: err_str,
+                    };
+                }
+                let wait = 1u64 << attempt; // 1, 2, 4, 8, 16 seconds
+                eprintln!(
+                    "[{}/{}] {}: attempt {}/{} failed ({}); retrying in {}s",
+                    idx + 1,
+                    total,
+                    name,
+                    attempt + 1,
+                    MAX_CONNECT_RETRIES + 1,
+                    err_str,
+                    wait,
+                );
+                std::thread::sleep(std::time::Duration::from_secs(wait));
+            }
         }
     }
-    kept_pb.set_position(totals.kept_rows);
-    kept_pb.set_message(totals.distinct_shard_files.len().to_string());
+    FileOutcome::Ok
 }
 
 type BoxedPredicate<E> = Box<dyn FnMut(&E) -> bool + Send>;
