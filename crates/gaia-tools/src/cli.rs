@@ -95,15 +95,9 @@ pub enum ReleaseChoice {
     Dr3,
 }
 
-impl ReleaseChoice {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ReleaseChoice::Dr1 => "DR1",
-            ReleaseChoice::Dr2 => "DR2",
-            ReleaseChoice::Dr3 => "DR3",
-        }
-    }
-}
+// (release-label conversion lives in main.rs as `release_label::<R>` so it
+// dispatches off the typed `R::RELEASE` rather than the CLI-side enum.)
+
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sharder {

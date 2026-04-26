@@ -9,7 +9,8 @@ use std::io::Write;
 
 use starfield::catalogs::StarCatalog;
 use starfield_gaia::excerpt::{
-    excerpt_csv_file, HashIdShard, HealpixShard, IdRangeShard, ShardKey,
+    excerpt_csv_file, excerpt_csv_file_into, HashIdShard, HealpixShard, IdRangeShard, ShardKey,
+    ShardedCsvWriter,
 };
 use starfield_gaia::{Dr3, Dr3Catalog};
 
@@ -211,6 +212,7 @@ fn excerpt_from_reader_streams_without_disk() {
         f64::INFINITY,
         out.path(),
         HashIdShard { num_shards: 4 },
+        "synthetic.csv",
         |_| true,
     )
     .expect("excerpt from reader");
@@ -233,4 +235,135 @@ fn healpix_shard_returns_in_range() {
     // Every shard count must be in 0..num_shards; sum equals kept.
     assert_eq!(summary.per_shard_counts.len(), 32);
     assert_eq!(summary.per_shard_counts.iter().sum::<u64>(), 50);
+}
+
+#[test]
+fn resume_skips_already_processed_files_no_dups() {
+    // Process 3 distinct fixtures into the same output dir across two writer
+    // sessions. The second session must skip files already in the manifest
+    // and end up with EXACTLY the union of rows, no duplicates.
+    fn make_fixture(start_id: u64, n: u64) -> tempfile::NamedTempFile {
+        let mut f = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();
+        writeln!(f, "{}", HEADER).unwrap();
+        for i in 0..n {
+            let id = start_id + i;
+            let row = row_from(&HashMap::from([
+                ("source_id", id.to_string().as_str()),
+                ("solution_id", "1635721458409799680"),
+                ("ref_epoch", "2016.0"),
+                ("ra", "10.0"),
+                ("ra_error", "0.04"),
+                ("dec", "20.0"),
+                ("dec_error", "0.04"),
+                ("l", "0.0"),
+                ("b", "0.0"),
+                ("ecl_lon", "0.0"),
+                ("ecl_lat", "0.0"),
+                ("phot_g_mean_mag", "10.0"),
+                ("phot_variable_flag", "NOT_AVAILABLE"),
+            ]));
+            writeln!(f, "{}", row).unwrap();
+        }
+        f.flush().unwrap();
+        f
+    }
+
+    let f1 = make_fixture(1_000_000, 60);
+    let f2 = make_fixture(2_000_000, 80);
+    let f3 = make_fixture(3_000_000, 100);
+    let out = tempfile::tempdir().unwrap();
+
+    // Session 1: process f1 + f2
+    {
+        let mut writer = ShardedCsvWriter::<Dr3, _>::new_or_resume(
+            out.path(),
+            HashIdShard { num_shards: 4 },
+            f64::INFINITY,
+        )
+        .expect("open writer");
+        excerpt_csv_file_into::<Dr3, _, _>(f1.path(), f64::INFINITY, &mut writer, |_| true)
+            .expect("f1 first time");
+        excerpt_csv_file_into::<Dr3, _, _>(f2.path(), f64::INFINITY, &mut writer, |_| true)
+            .expect("f2 first time");
+        let s = writer.finish().unwrap();
+        assert_eq!(s.kept_rows, 140);
+    }
+
+    // Session 2 (simulates resume after a crash): pretend we don't know
+    // what was processed, just iterate all 3 fixtures. Writer skips f1/f2,
+    // processes f3.
+    {
+        let mut writer = ShardedCsvWriter::<Dr3, _>::new_or_resume(
+            out.path(),
+            HashIdShard { num_shards: 4 },
+            f64::INFINITY,
+        )
+        .expect("re-open writer");
+        let already = writer.processed_files().clone();
+        assert!(already.contains(f1.path().file_name().unwrap().to_str().unwrap()));
+        assert!(already.contains(f2.path().file_name().unwrap().to_str().unwrap()));
+
+        for path in [f1.path(), f2.path(), f3.path()] {
+            let name = path.file_name().unwrap().to_str().unwrap().to_string();
+            if already.contains(&name) {
+                continue;
+            }
+            excerpt_csv_file_into::<Dr3, _, _>(path, f64::INFINITY, &mut writer, |_| true)
+                .expect("f3 first time");
+        }
+        let s = writer.finish().unwrap();
+        // Must equal the union, not double-count f1+f2.
+        assert_eq!(s.kept_rows, 240, "resume double-counted or missed rows");
+        assert_eq!(s.per_shard_counts.iter().sum::<u64>(), 240);
+    }
+
+    // Round-trip: reload every shard via Dr3Catalog and verify every
+    // expected source_id is present exactly once.
+    let mut all_ids = Vec::new();
+    for shard in std::fs::read_dir(out.path()).unwrap() {
+        let p = shard.unwrap().path();
+        if !p.to_string_lossy().ends_with(".csv.gz") {
+            continue;
+        }
+        let cat = Dr3Catalog::from_csv_file(&p, f64::INFINITY).expect("reload shard");
+        for s in cat.stars() {
+            all_ids.push(s.core.source_id);
+        }
+    }
+    all_ids.sort();
+    let mut expected: Vec<u64> = Vec::with_capacity(240);
+    expected.extend(1_000_000..1_000_060);
+    expected.extend(2_000_000..2_000_080);
+    expected.extend(3_000_000..3_000_100);
+    expected.sort();
+    assert_eq!(all_ids, expected, "resume corrupted round-trip");
+}
+
+#[test]
+fn manifest_validation_rejects_mismatched_resume() {
+    // First run with 4 shards. Second run with 8 shards must refuse to attach.
+    let fixture = write_n_row_fixture(20);
+    let out = tempfile::tempdir().unwrap();
+    excerpt_csv_file::<Dr3, _, _>(
+        fixture.path(),
+        f64::INFINITY,
+        out.path(),
+        HashIdShard { num_shards: 4 },
+        |_| true,
+    )
+    .unwrap();
+
+    let err = ShardedCsvWriter::<Dr3, _>::new_or_resume(
+        out.path(),
+        HashIdShard { num_shards: 8 }, // mismatch
+        f64::INFINITY,
+    )
+    .err()
+    .expect("must reject mismatched shard count");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("sharder mismatch") || msg.contains("shard count mismatch"),
+        "unexpected error message: {}",
+        msg
+    );
 }

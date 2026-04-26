@@ -1,6 +1,11 @@
 //! `gaia-excerpt` — apply a predicate to one or more Gaia CSV(.gz) files
 //! (local paths or streamed from ESA's CDN) and write the kept entries to
 //! sharded gzipped CSVs that round-trip through `Dr{1,2,3}Catalog::from_csv_file`.
+//!
+//! Crash-safe and resumable: on each invocation, the writer reads the
+//! `.gaia-excerpt-manifest.json` in the output directory and skips any input
+//! files already committed. Re-running the exact same command after a crash
+//! (or sibling-OOM, or reboot) picks up cleanly.
 
 fn main() {
     if let Err(e) = run() {
@@ -30,10 +35,7 @@ fn run() -> Result<()> {
     args.validate()?;
     let release = args.effective_release()?;
 
-    // Dispatch on release exactly once so the writer can live across every
-    // input file in the run. (Previously the per-file `excerpt_csv_file`
-    // convenience constructed a fresh writer each time, which `File::create`-
-    // truncated every shard it touched and silently lost data.)
+    // Dispatch on release once so the writer is monomorphized.
     match release {
         ReleaseChoice::Dr1 => run_release::<Dr1>(&args),
         ReleaseChoice::Dr2 => run_release::<Dr2>(&args),
@@ -45,17 +47,31 @@ fn run_release<R: GaiaRelease>(args: &Cli) -> Result<()> {
     let mag_limit = args.mag_limit.unwrap_or(f64::INFINITY);
 
     let sharder = make_sharder::<R::Entry>(args);
-    let mut writer =
-        ShardedCsvWriter::<R, Box<dyn ShardKey<R::Entry>>>::new(&args.output_dir, sharder)?;
+    let mut writer = ShardedCsvWriter::<R, Box<dyn ShardKey<R::Entry>>>::new_or_resume(
+        &args.output_dir,
+        sharder,
+        mag_limit,
+    )?;
     let mut predicate = build_predicate::<R::Entry>(args)?;
+
+    let already_processed = writer.processed_files().clone();
+    if !already_processed.is_empty() {
+        eprintln!(
+            "resume: manifest at {} lists {} already-processed files; skipping those",
+            writer.manifest_path().display(),
+            already_processed.len()
+        );
+    }
 
     let multi = indicatif::MultiProgress::new();
     let kept_pb = multi.add(ProgressBar::new_spinner());
     kept_pb.set_style(
         ProgressStyle::with_template("  kept: {pos} stars (across all shards)").unwrap(),
     );
+    kept_pb.set_position(writer.kept_so_far());
 
     let mut input_rows_total: usize = 0;
+    let mut skipped_failures: Vec<(String, String)> = Vec::new();
 
     if !args.input.is_empty() {
         let file_pb = multi.add(ProgressBar::new(args.input.len() as u64));
@@ -66,6 +82,18 @@ fn run_release<R: GaiaRelease>(args: &Cli) -> Result<()> {
             .unwrap(),
         );
         for input in &args.input {
+            let name = input
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("input")
+                .to_string();
+            if already_processed.contains(&name) {
+                if args.clean_after_excerpt {
+                    let _ = std::fs::remove_file(input);
+                }
+                file_pb.inc(1);
+                continue;
+            }
             let rows =
                 excerpt_csv_file_into::<R, _, _>(input, mag_limit, &mut writer, &mut predicate)?;
             input_rows_total += rows;
@@ -98,11 +126,21 @@ fn run_release<R: GaiaRelease>(args: &Cli) -> Result<()> {
             )
             .unwrap(),
         );
-        let mut skipped: Vec<(String, String)> = Vec::new();
-        let mut partial: Vec<String> = Vec::new();
 
         for (idx, name) in names.iter().take(total_files).enumerate() {
-            let outcome = retry_one_file::<R>(
+            if already_processed.contains(name) {
+                // Resume case: this file was committed in a prior run. If the
+                // raw is still hanging around in the cache, evict it now.
+                if args.cache_raw && args.clean_after_excerpt {
+                    let path = Downloader::<R>::cache_dir().join(name);
+                    if path.exists() {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+                file_pb.inc(1);
+                continue;
+            }
+            match retry_one_file::<R>(
                 idx,
                 total_files,
                 name,
@@ -110,32 +148,20 @@ fn run_release<R: GaiaRelease>(args: &Cli) -> Result<()> {
                 mag_limit,
                 &mut writer,
                 &mut predicate,
-                &mut input_rows_total,
-            );
-            match outcome {
-                FileOutcome::Ok => {}
-                FileOutcome::PartialMidStream { rows_written, err } => {
-                    eprintln!(
-                        "[{}/{}] {}: mid-stream failure after {} rows kept ({}); \
-                         continuing with partial data from this file",
-                        idx + 1,
-                        total_files,
-                        name,
-                        rows_written,
-                        err
-                    );
-                    partial.push(name.clone());
+            ) {
+                FileOutcome::Ok(rows) => {
+                    input_rows_total += rows;
                 }
                 FileOutcome::GivingUp { attempts, err } => {
                     eprintln!(
-                        "[{}/{}] {}: giving up after {} connect attempts ({})",
+                        "[{}/{}] {}: giving up after {} attempts ({})",
                         idx + 1,
                         total_files,
                         name,
                         attempts,
                         err
                     );
-                    skipped.push((name.clone(), err));
+                    skipped_failures.push((name.clone(), err));
                 }
             }
             kept_pb.set_position(writer.kept_so_far());
@@ -143,21 +169,12 @@ fn run_release<R: GaiaRelease>(args: &Cli) -> Result<()> {
         }
         file_pb.finish_with_message("done");
 
-        if !partial.is_empty() {
+        if !skipped_failures.is_empty() {
             eprintln!(
-                "\n{} files had mid-stream failures (some rows may be missing from shards):",
-                partial.len()
+                "\n{} files exhausted retries — re-run the same command to retry them:",
+                skipped_failures.len()
             );
-            for p in &partial {
-                eprintln!("  - {}", p);
-            }
-        }
-        if !skipped.is_empty() {
-            eprintln!(
-                "\n{} files never completed a single successful connect:",
-                skipped.len()
-            );
-            for (p, err) in &skipped {
+            for (p, err) in &skipped_failures {
                 eprintln!("  - {}  ({})", p, err);
             }
         }
@@ -167,14 +184,9 @@ fn run_release<R: GaiaRelease>(args: &Cli) -> Result<()> {
     let summary = writer.finish()?;
     let written: Vec<_> = summary.written_paths().cloned().collect();
     println!(
-        "read {} stars; kept {} ({:.2}%); wrote {} shard files",
+        "read {} stars (this run); kept total {} across {} shard files",
         input_rows_total,
         summary.kept_rows,
-        if input_rows_total == 0 {
-            0.0
-        } else {
-            100.0 * summary.kept_rows as f64 / input_rows_total as f64
-        },
         written.len(),
     );
 
@@ -224,17 +236,15 @@ fn make_sharder<E: GaiaSource + 'static>(args: &Cli) -> Box<dyn ShardKey<E>> {
     }
 }
 
-/// Outcome of one (retried) CDN file. `Ok` = file fully processed. `PartialMidStream`
-/// = the HTTP body errored mid-read after some rows had already been written to
-/// shards; we don't retry (would duplicate those rows) and move on. `GivingUp` =
-/// failed before a single row was kept and exhausted retries.
+/// Outcome of one retried CDN file. With the new buffered-commit writer there's
+/// no longer a "mid-stream partial commit" case — failures during read leave
+/// the writer's in-memory pending buffer dirty, but commit_file is never
+/// reached, so the manifest and shards are unchanged. Retries are always safe.
 enum FileOutcome {
-    Ok,
-    PartialMidStream { rows_written: u64, err: String },
+    Ok(usize),
     GivingUp { attempts: u32, err: String },
 }
 
-#[allow(clippy::too_many_arguments)]
 fn retry_one_file<R>(
     idx: usize,
     total: usize,
@@ -243,22 +253,17 @@ fn retry_one_file<R>(
     mag_limit: f64,
     writer: &mut ShardedCsvWriter<R, Box<dyn ShardKey<R::Entry>>>,
     predicate: &mut BoxedPredicate<R::Entry>,
-    input_rows_total: &mut usize,
 ) -> FileOutcome
 where
     R: GaiaRelease,
 {
     for attempt in 0..=MAX_CONNECT_RETRIES {
-        let kept_before = writer.kept_so_far();
         let res: Result<usize> = if args.cache_raw {
             match Downloader::<R>::download_file(name) {
                 Ok(path) => {
                     let extract =
                         excerpt_csv_file_into::<R, _, _>(&path, mag_limit, writer, &mut *predicate);
-                    // On successful extract, optionally evict the cached raw
-                    // file so disk usage stays bounded (one file in flight).
-                    // Failure to delete is a warning, not an error — the
-                    // rows are already committed to shards.
+                    // Evict cached raw only after a successful extract+commit.
                     if extract.is_ok() && args.clean_after_excerpt {
                         if let Err(e) = std::fs::remove_file(&path) {
                             eprintln!(
@@ -282,25 +287,16 @@ where
                     true,
                     mag_limit,
                     writer,
+                    name,
                     &mut *predicate,
                 ),
                 Err(e) => Err(e),
             }
         };
         match res {
-            Ok(rows) => {
-                *input_rows_total += rows;
-                return FileOutcome::Ok;
-            }
+            Ok(rows) => return FileOutcome::Ok(rows),
             Err(e) => {
                 let err_str = e.to_string();
-                let rows_written = writer.kept_so_far().saturating_sub(kept_before);
-                if rows_written > 0 {
-                    return FileOutcome::PartialMidStream {
-                        rows_written,
-                        err: err_str,
-                    };
-                }
                 if attempt == MAX_CONNECT_RETRIES {
                     return FileOutcome::GivingUp {
                         attempts: attempt + 1,
@@ -322,7 +318,7 @@ where
             }
         }
     }
-    FileOutcome::Ok
+    FileOutcome::Ok(0)
 }
 
 type BoxedPredicate<E> = Box<dyn FnMut(&E) -> bool + Send>;

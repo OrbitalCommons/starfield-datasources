@@ -15,7 +15,7 @@ use arrow::csv::reader::Format;
 use arrow::csv::ReaderBuilder;
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 
 use crate::common::traits::GaiaRelease;
 use starfield::{Result, StarfieldError};
@@ -62,8 +62,12 @@ impl<R: GaiaRelease> CsvSourceReader<R> {
     /// Set `is_gz` true for gzipped streams (this wraps in `flate2::GzDecoder`).
     /// `mag_limit` is applied per-row at the same point as in [`open`](Self::open).
     pub fn from_reader(reader: Box<dyn Read>, is_gz: bool, mag_limit: f64) -> Result<Self> {
+        // MultiGzDecoder reads concatenated gzip streams as one logical stream.
+        // The excerpt writer emits one gz stream per input file appended into
+        // the same shard file, so resumable shard files can have many streams
+        // back-to-back.
         let raw: Box<dyn Read> = if is_gz {
-            Box::new(BufReader::new(GzDecoder::new(BufReader::new(reader))))
+            Box::new(BufReader::new(MultiGzDecoder::new(BufReader::new(reader))))
         } else {
             Box::new(BufReader::new(reader))
         };
