@@ -98,7 +98,6 @@ pub enum ReleaseChoice {
 // (release-label conversion lives in main.rs as `release_label::<R>` so it
 // dispatches off the typed `R::RELEASE` rather than the CLI-side enum.)
 
-
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sharder {
     Hash,
