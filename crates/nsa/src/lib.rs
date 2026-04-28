@@ -1,15 +1,19 @@
 //! NASA-Sloan Atlas (NSA) galaxy catalog loader and downloader.
 //!
-//! The NSA is the canonical SDSS-derived extragalactic catalog: ~640,000
-//! galaxies with positions, redshifts, Sérsic structural fits, and per-band
-//! integrated photometry across the SDSS+GALEX bands (FUV, NUV, u, g, r, i, z).
+//! The NSA is the canonical SDSS-derived extragalactic catalog. Two releases
+//! exist in the wild and this crate handles both:
 //!
-//! This crate exposes a curated subset of the columns relevant for galaxy
-//! rendering pipelines. The full NSA `nsa_v1_0_1.fits` file has ~150 columns;
-//! the unexposed ones (image flags, Petrosian fluxes, K-corrections, PCA
-//! stellar-population fits, etc.) can be added if a downstream needs them.
+//! - **v0_1_2** (~145k galaxies, 5-band `u, g, r, i, z`, ~0.5 GB) — the
+//!   currently-downloadable file from `sdss.physics.nyu.edu`.
+//! - **v1_0_1** (~640k galaxies, 7-band adds GALEX `FUV, NUV`, ~3 GB) — used
+//!   to live under `data.sdss.org/sas/dr17/manga/atlas/`; that path 404s as
+//!   of the 2026 SDSS DR17 reorg. The loader still parses it correctly if
+//!   you have one on disk.
 //!
-//! Source: https://www.sdss.org/dr17/manga/manga-target-selection/nsa/
+//! [`NsaCatalog::from_fits_file`] auto-detects which version it's reading
+//! from the `SERSIC_FLUX` column shape and remaps the v0_1_2 5-band data
+//! into the canonical 7-slot in-memory layout (FUV/NUV slots zeroed). Use
+//! [`NsaCatalog::version`] to ask which file you got.
 //!
 //! # Example
 //!
@@ -18,12 +22,12 @@
 //! use starfield_nsa::{download_nsa, NsaCatalog};
 //! let path = download_nsa()?;
 //! let cat = NsaCatalog::from_fits_file(&path)?;
-//! println!("{} galaxies", cat.len());
+//! println!("{} galaxies (NSA {:?})", cat.len(), cat.version());
 //! # Ok::<(), starfield::StarfieldError>(())
 //! ```
 
 pub mod catalog;
 pub mod downloader;
 
-pub use catalog::{NsaCatalog, NsaEntry};
+pub use catalog::{NsaCatalog, NsaEntry, NsaVersion, BANDS, N_BANDS};
 pub use downloader::download_nsa;
