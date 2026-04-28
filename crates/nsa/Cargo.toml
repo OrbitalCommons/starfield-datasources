@@ -1,0 +1,18 @@
+[package]
+name = "starfield-nsa"
+version = "0.1.0"
+description = "NASA-Sloan Atlas (NSA) galaxy catalog loader and downloader"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+starfield = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+nalgebra = { workspace = true }
+fitsio-pure = { workspace = true }
+starfield-datasource-utils = { version = "0.1.0", path = "../datasource-utils" }
+
+[dev-dependencies]
+tempfile = "3"

@@ -11,6 +11,7 @@
 //! - `gaia-all` — adds DR1 and DR2 alongside DR3
 //! - `hipparcos` — Hipparcos star catalog loader
 //! - `mpc` — Minor Planet Center client (MPCORB, observatory codes, observations)
+//! - `nsa` — NASA-Sloan Atlas (NSA) galaxy catalog loader
 //! - `rubin` — Vera C. Rubin Observatory LSST alert broker clients
 
 #[cfg(feature = "horizons")]
@@ -27,6 +28,9 @@ pub use starfield_hipparcos as hipparcos;
 
 #[cfg(feature = "mpc")]
 pub use starfield_mpc as mpc;
+
+#[cfg(feature = "nsa")]
+pub use starfield_nsa as nsa;
 
 #[cfg(feature = "rubin")]
 pub use starfield_rubin as rubin;
