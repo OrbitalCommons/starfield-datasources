@@ -26,6 +26,10 @@ use starfield_gaia::excerpt::{
     ShardKey, ShardedCsvWriter,
 };
 use starfield_gaia::{Dr1, Dr2, Dr3, GaiaRelease, GaiaSource};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::sync_channel;
+use std::sync::Arc;
 
 const MAX_CONNECT_RETRIES: u32 = 4; // total 5 attempts
 
@@ -108,8 +112,9 @@ fn run_release<R: GaiaRelease>(args: &Cli) -> Result<()> {
         // CDN mode: enumerate, then per-file streamed-or-cached with retry.
         let names = Downloader::<R>::list_remote()?;
         let total_files = args.max_files.unwrap_or(names.len()).min(names.len());
+        let parallel = args.cache_raw && args.download_workers > 1;
         eprintln!(
-            "fetching {} of {} {} files from CDN ({})",
+            "fetching {} of {} {} files from CDN ({}{})",
             total_files,
             names.len(),
             release_label::<R>(),
@@ -118,7 +123,31 @@ fn run_release<R: GaiaRelease>(args: &Cli) -> Result<()> {
             } else {
                 "streaming, no raw on disk"
             },
+            if parallel {
+                format!(", {} download workers", args.download_workers)
+            } else {
+                String::new()
+            },
         );
+
+        // Pre-filter: skip already-processed files, optionally evicting any
+        // stale raw cache entries left over from a prior run.
+        let mut work: Vec<String> = Vec::with_capacity(total_files);
+        let mut skipped_resume = 0usize;
+        for name in names.iter().take(total_files) {
+            if already_processed.contains(name) {
+                if args.cache_raw && args.clean_after_excerpt {
+                    let path = Downloader::<R>::cache_dir().join(name);
+                    if path.exists() {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                }
+                skipped_resume += 1;
+            } else {
+                work.push(name.clone());
+            }
+        }
+
         let file_pb = multi.add(ProgressBar::new(total_files as u64));
         file_pb.set_style(
             ProgressStyle::with_template(
@@ -126,46 +155,49 @@ fn run_release<R: GaiaRelease>(args: &Cli) -> Result<()> {
             )
             .unwrap(),
         );
+        file_pb.set_position(skipped_resume as u64);
 
-        for (idx, name) in names.iter().take(total_files).enumerate() {
-            if already_processed.contains(name) {
-                // Resume case: this file was committed in a prior run. If the
-                // raw is still hanging around in the cache, evict it now.
-                if args.cache_raw && args.clean_after_excerpt {
-                    let path = Downloader::<R>::cache_dir().join(name);
-                    if path.exists() {
-                        let _ = std::fs::remove_file(&path);
-                    }
-                }
-                file_pb.inc(1);
-                continue;
-            }
-            match retry_one_file::<R>(
-                idx,
-                total_files,
-                name,
+        if parallel {
+            run_parallel_cdn::<R>(
+                &work,
                 args,
                 mag_limit,
                 &mut writer,
                 &mut predicate,
-            ) {
-                FileOutcome::Ok(rows) => {
-                    input_rows_total += rows;
+                &file_pb,
+                &kept_pb,
+                &mut input_rows_total,
+                &mut skipped_failures,
+            )?;
+        } else {
+            for (idx, name) in work.iter().enumerate() {
+                match retry_one_file::<R>(
+                    idx,
+                    work.len(),
+                    name,
+                    args,
+                    mag_limit,
+                    &mut writer,
+                    &mut predicate,
+                ) {
+                    FileOutcome::Ok(rows) => {
+                        input_rows_total += rows;
+                    }
+                    FileOutcome::GivingUp { attempts, err } => {
+                        eprintln!(
+                            "[{}/{}] {}: giving up after {} attempts ({})",
+                            idx + 1,
+                            work.len(),
+                            name,
+                            attempts,
+                            err
+                        );
+                        skipped_failures.push((name.clone(), err));
+                    }
                 }
-                FileOutcome::GivingUp { attempts, err } => {
-                    eprintln!(
-                        "[{}/{}] {}: giving up after {} attempts ({})",
-                        idx + 1,
-                        total_files,
-                        name,
-                        attempts,
-                        err
-                    );
-                    skipped_failures.push((name.clone(), err));
-                }
+                kept_pb.set_position(writer.kept_so_far());
+                file_pb.inc(1);
             }
-            kept_pb.set_position(writer.kept_so_far());
-            file_pb.inc(1);
         }
         file_pb.finish_with_message("done");
 
@@ -319,6 +351,123 @@ where
         }
     }
     FileOutcome::Ok(0)
+}
+
+/// Result of a single CDN download attempt, sent from worker threads to the
+/// extract thread. The raw bytes are already on disk at `path` when `res` is
+/// `Ok`; on `Err`, the file was never produced (or a partial tmp was cleaned
+/// up by `download_to_file`'s atomic-rename guarantee).
+struct DownloadOutcome {
+    name: String,
+    res: std::result::Result<PathBuf, String>,
+}
+
+/// Spawn a download worker pool and drain results into the single-threaded
+/// extract phase. Workers retry their own download up to `MAX_CONNECT_RETRIES`
+/// before reporting failure. The bounded channel limits how many staged raw
+/// files sit on disk at once: `download_workers` files × ~5 MB/file ≈ tens
+/// of MB at peak.
+#[allow(clippy::too_many_arguments)]
+fn run_parallel_cdn<R: GaiaRelease>(
+    work: &[String],
+    args: &Cli,
+    mag_limit: f64,
+    writer: &mut ShardedCsvWriter<R, Box<dyn ShardKey<R::Entry>>>,
+    predicate: &mut BoxedPredicate<R::Entry>,
+    file_pb: &ProgressBar,
+    kept_pb: &ProgressBar,
+    input_rows_total: &mut usize,
+    skipped_failures: &mut Vec<(String, String)>,
+) -> Result<()> {
+    let workers = args.download_workers.max(1) as usize;
+    let names: Arc<Vec<String>> = Arc::new(work.to_vec());
+    let next = Arc::new(AtomicUsize::new(0));
+    let (tx, rx) = sync_channel::<DownloadOutcome>(workers);
+
+    let mut handles = Vec::with_capacity(workers);
+    for _ in 0..workers {
+        let names = Arc::clone(&names);
+        let next = Arc::clone(&next);
+        let tx = tx.clone();
+        handles.push(std::thread::spawn(move || loop {
+            let i = next.fetch_add(1, Ordering::SeqCst);
+            if i >= names.len() {
+                break;
+            }
+            let name = names[i].clone();
+            let res = retry_download::<R>(&name);
+            if tx.send(DownloadOutcome { name, res }).is_err() {
+                break;
+            }
+        }));
+    }
+    drop(tx);
+
+    while let Ok(item) = rx.recv() {
+        match item.res {
+            Ok(path) => {
+                let extract =
+                    excerpt_csv_file_into::<R, _, _>(&path, mag_limit, writer, &mut *predicate);
+                match extract {
+                    Ok(rows) => {
+                        *input_rows_total += rows;
+                        if args.clean_after_excerpt {
+                            if let Err(e) = std::fs::remove_file(&path) {
+                                eprintln!(
+                                    "{}: warn: extract ok but failed to evict {}: {}",
+                                    item.name,
+                                    path.display(),
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let err_str = e.to_string();
+                        eprintln!("{}: extract failed: {}", item.name, err_str);
+                        skipped_failures.push((item.name, err_str));
+                    }
+                }
+            }
+            Err(e) => {
+                skipped_failures.push((item.name, e));
+            }
+        }
+        kept_pb.set_position(writer.kept_so_far());
+        file_pb.inc(1);
+    }
+
+    for h in handles {
+        let _ = h.join();
+    }
+    Ok(())
+}
+
+/// Download one file with bounded retries, returning a stringified error on
+/// final failure (so it can cross thread boundaries without `Send` worries).
+fn retry_download<R: GaiaRelease>(name: &str) -> std::result::Result<PathBuf, String> {
+    for attempt in 0..=MAX_CONNECT_RETRIES {
+        match Downloader::<R>::download_file(name) {
+            Ok(p) => return Ok(p),
+            Err(e) => {
+                let s = e.to_string();
+                if attempt == MAX_CONNECT_RETRIES {
+                    return Err(format!("after {} attempts: {}", MAX_CONNECT_RETRIES + 1, s));
+                }
+                let wait = 1u64 << attempt; // 1, 2, 4, 8 seconds
+                eprintln!(
+                    "{}: download attempt {}/{} failed ({}); retrying in {}s",
+                    name,
+                    attempt + 1,
+                    MAX_CONNECT_RETRIES + 1,
+                    s,
+                    wait,
+                );
+                std::thread::sleep(std::time::Duration::from_secs(wait));
+            }
+        }
+    }
+    unreachable!("retry_download loop should have returned by now")
 }
 
 type BoxedPredicate<E> = Box<dyn FnMut(&E) -> bool + Send>;
