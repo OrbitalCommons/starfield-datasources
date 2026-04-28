@@ -8,6 +8,7 @@ members = [
     "crates/gaia-tools",
     "crates/hipparcos",
     "crates/mpc",
+    "crates/nsa",
     "crates/rubin",
     "crates/starfield-datasources",
 ]
@@ -34,3 +35,4 @@ indicatif = "0.17"
 arrow = "58"
 cdshealpix = "0.9.1"
 clap = { version = "4", features = ["derive"] }
+fitsio-pure = "0.11"
