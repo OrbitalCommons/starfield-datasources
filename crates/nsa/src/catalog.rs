@@ -171,10 +171,15 @@ impl NsaCatalog {
             .filter_map(|(i, c)| c.name.as_deref().map(|n| (n, i)))
             .collect();
 
-        // Detect version from the SERSIC_FLUX column's TFORM repeat. v0_1_2
+        // v0_1_2 names the column `SERSICFLUX` (no underscore); v1_0_1 uses
+        // `SERSIC_FLUX`. Same story for the inverse-variance companion.
+        let flux_name = pick_name(&by_name, &["SERSIC_FLUX", "SERSICFLUX"])?;
+        let flux_ivar_name = pick_name(&by_name, &["SERSIC_FLUX_IVAR", "SERSICFLUX_IVAR"])?;
+
+        // Detect version from the resolved flux column's TFORM repeat. v0_1_2
         // is 5-band (u/g/r/i/z); v1_0_1 is 7-band (adds GALEX FUV/NUV at
         // indices 0-1).
-        let flux_idx = col_index(&by_name, "SERSIC_FLUX")?;
+        let flux_idx = col_index(&by_name, flux_name)?;
         let version = NsaVersion::from_repeat(columns[flux_idx].repeat)?;
 
         let nsaid = read_u32_col(&bytes, hdu, &columns, &by_name, "NSAID")?;
@@ -185,9 +190,9 @@ impl NsaCatalog {
         let nser = read_f32_col(&bytes, hdu, &columns, &by_name, "SERSIC_N")?;
         let ba = read_f32_col(&bytes, hdu, &columns, &by_name, "SERSIC_BA")?;
         let phi = read_f32_col(&bytes, hdu, &columns, &by_name, "SERSIC_PHI")?;
-        let flux = read_f32_band_array(&bytes, hdu, &columns, &by_name, "SERSIC_FLUX", version)?;
+        let flux = read_f32_band_array(&bytes, hdu, &columns, &by_name, flux_name, version)?;
         let flux_ivar =
-            read_f32_band_array(&bytes, hdu, &columns, &by_name, "SERSIC_FLUX_IVAR", version)?;
+            read_f32_band_array(&bytes, hdu, &columns, &by_name, flux_ivar_name, version)?;
 
         let n = nsaid.len();
         for (label, len) in [
@@ -198,8 +203,8 @@ impl NsaCatalog {
             ("SERSIC_N", nser.len()),
             ("SERSIC_BA", ba.len()),
             ("SERSIC_PHI", phi.len()),
-            ("SERSIC_FLUX", flux.len()),
-            ("SERSIC_FLUX_IVAR", flux_ivar.len()),
+            (flux_name, flux.len()),
+            (flux_ivar_name, flux_ivar.len()),
         ] {
             if len != n {
                 return Err(StarfieldError::DataError(format!(
@@ -308,6 +313,22 @@ fn col_index(by_name: &HashMap<&str, usize>, name: &str) -> Result<usize> {
     by_name.get(name).copied().ok_or_else(|| {
         StarfieldError::DataError(format!("NSA: missing required column `{}`", name))
     })
+}
+
+/// Return the first name from `candidates` that is present in `by_name`. Used
+/// to handle column-name spelling differences across NSA versions (e.g. v0_1_2
+/// has `SERSICFLUX`, v1_0_1 has `SERSIC_FLUX`). Errors include every candidate
+/// so the failure message is debuggable when an unfamiliar release is loaded.
+fn pick_name<'a>(by_name: &HashMap<&str, usize>, candidates: &[&'a str]) -> Result<&'a str> {
+    for &name in candidates {
+        if by_name.contains_key(name) {
+            return Ok(name);
+        }
+    }
+    Err(StarfieldError::DataError(format!(
+        "NSA: none of the expected column names {:?} were present",
+        candidates
+    )))
 }
 
 fn read_col(

@@ -518,3 +518,137 @@ fn unknown_band_count_is_rejected() {
         s
     );
 }
+
+/// v0_1_2 in the wild uses `SERSICFLUX` / `SERSICFLUX_IVAR` (no underscore
+/// between `SERSIC` and `FLUX`). v1_0_1 uses `SERSIC_FLUX` / `SERSIC_FLUX_IVAR`.
+/// The loader must accept either spelling.
+#[test]
+fn round_trip_no_underscore_flux_column_name() {
+    use starfield_nsa::NsaVersion;
+
+    let n_rows: usize = 1;
+    let columns = vec![
+        BinaryColumnDescriptor {
+            name: Some(String::from("NSAID")),
+            repeat: 1,
+            col_type: BinaryColumnType::Int,
+            byte_width: 4,
+        },
+        BinaryColumnDescriptor {
+            name: Some(String::from("RA")),
+            repeat: 1,
+            col_type: BinaryColumnType::Double,
+            byte_width: 8,
+        },
+        BinaryColumnDescriptor {
+            name: Some(String::from("DEC")),
+            repeat: 1,
+            col_type: BinaryColumnType::Double,
+            byte_width: 8,
+        },
+        BinaryColumnDescriptor {
+            name: Some(String::from("Z")),
+            repeat: 1,
+            col_type: BinaryColumnType::Float,
+            byte_width: 4,
+        },
+        BinaryColumnDescriptor {
+            name: Some(String::from("SERSIC_TH50")),
+            repeat: 1,
+            col_type: BinaryColumnType::Float,
+            byte_width: 4,
+        },
+        BinaryColumnDescriptor {
+            name: Some(String::from("SERSIC_N")),
+            repeat: 1,
+            col_type: BinaryColumnType::Float,
+            byte_width: 4,
+        },
+        BinaryColumnDescriptor {
+            name: Some(String::from("SERSIC_BA")),
+            repeat: 1,
+            col_type: BinaryColumnType::Float,
+            byte_width: 4,
+        },
+        BinaryColumnDescriptor {
+            name: Some(String::from("SERSIC_PHI")),
+            repeat: 1,
+            col_type: BinaryColumnType::Float,
+            byte_width: 4,
+        },
+        BinaryColumnDescriptor {
+            name: Some(String::from("SERSICFLUX")),
+            repeat: 5,
+            col_type: BinaryColumnType::Float,
+            byte_width: 20,
+        },
+        BinaryColumnDescriptor {
+            name: Some(String::from("SERSICFLUX_IVAR")),
+            repeat: 5,
+            col_type: BinaryColumnType::Float,
+            byte_width: 20,
+        },
+    ];
+
+    // Distinct r-band flux so the AB mag check below is unambiguous.
+    let flux: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 5.0]; // u, g, r, i, z
+    let ivar: Vec<f32> = vec![0.5; 5];
+
+    let col_data = vec![
+        BinaryColumnData::Int(vec![777]),
+        BinaryColumnData::Double(vec![123.0]),
+        BinaryColumnData::Double(vec![45.0]),
+        BinaryColumnData::Float(vec![0.04]),
+        BinaryColumnData::Float(vec![1.5]),
+        BinaryColumnData::Float(vec![2.5]),
+        BinaryColumnData::Float(vec![0.7]),
+        BinaryColumnData::Float(vec![60.0]),
+        BinaryColumnData::Float(flux),
+        BinaryColumnData::Float(ivar),
+    ];
+
+    let bt_ext = serialize_binary_table_hdu(&columns, &col_data, n_rows).unwrap();
+    let mut fits_bytes = empty_primary_hdu();
+    fits_bytes.extend_from_slice(&bt_ext);
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    tmp.as_file().write_all(&fits_bytes).unwrap();
+    tmp.as_file().sync_all().unwrap();
+
+    let cat = NsaCatalog::from_fits_file(tmp.path()).unwrap();
+    assert_eq!(cat.version(), NsaVersion::V0_1_2);
+    use starfield::catalogs::StarCatalog;
+    let e = cat.get_star(777).unwrap();
+    // r-band src index 2 → in-memory index 4, value 3.0 nMgy → AB ≈ 21.30
+    assert!((e.sersic_flux[NsaVersion::R_BAND_IDX] - 3.0).abs() < 1e-6);
+    assert_eq!(e.sersic_flux[0], 0.0); // FUV padded
+    assert_eq!(e.sersic_flux[1], 0.0); // NUV padded
+}
+
+/// Erroring out should clearly mention every name it tried, so an unfamiliar
+/// release name doesn't produce a misleading "missing column SERSIC_FLUX" message.
+#[test]
+fn missing_flux_column_lists_all_candidates() {
+    let columns = vec![
+        BinaryColumnDescriptor {
+            name: Some(String::from("NSAID")),
+            repeat: 1,
+            col_type: BinaryColumnType::Int,
+            byte_width: 4,
+        },
+        // Intentionally drop both SERSIC_FLUX and SERSICFLUX.
+    ];
+    let col_data = vec![BinaryColumnData::Int(vec![1])];
+    let bt_ext = serialize_binary_table_hdu(&columns, &col_data, 1).unwrap();
+    let mut fits_bytes = empty_primary_hdu();
+    fits_bytes.extend_from_slice(&bt_ext);
+
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    tmp.as_file().write_all(&fits_bytes).unwrap();
+    tmp.as_file().sync_all().unwrap();
+
+    let err = NsaCatalog::from_fits_file(tmp.path()).unwrap_err();
+    let s = err.to_string();
+    assert!(s.contains("SERSIC_FLUX"), "want SERSIC_FLUX in: {}", s);
+    assert!(s.contains("SERSICFLUX"), "want SERSICFLUX in: {}", s);
+}
