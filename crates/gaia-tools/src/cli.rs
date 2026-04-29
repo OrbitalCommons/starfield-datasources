@@ -34,6 +34,13 @@ pub struct Cli {
     #[arg(long = "cache-raw", default_value_t = false)]
     pub cache_raw: bool,
 
+    /// Concurrent CDN download workers used in `--cache-raw` mode. Workers
+    /// download in parallel into the per-release cache; the extract+commit
+    /// phase is single-threaded and consumes results as they arrive.
+    /// Streaming mode (`--cache-raw` not set) ignores this and runs serially.
+    #[arg(long = "download-workers", default_value_t = 10)]
+    pub download_workers: u32,
+
     /// Delete each input file from disk once it has been successfully
     /// extracted. Applies to both `--input` local paths AND `--from-release
     /// --cache-raw` CDN-cached files (which makes that mode "stage to disk,
