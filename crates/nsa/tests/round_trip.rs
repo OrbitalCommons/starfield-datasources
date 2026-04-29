@@ -282,8 +282,12 @@ fn ab_magnitude_handles_zero_flux() {
     let cat = NsaCatalog::from_fits_file(tmp.path()).unwrap();
     use starfield::catalogs::StarCatalog;
     let e = cat.get_star(42).unwrap();
-    assert_eq!(e.ab_magnitude(4), None, "zero r-band flux must yield None");
-    assert!(e.ab_magnitude(0).is_some());
+    assert_eq!(
+        e.sersic_ab_magnitude(4),
+        None,
+        "zero r-band flux must yield None"
+    );
+    assert!(e.sersic_ab_magnitude(0).is_some());
 
     let v = e.unit_vector();
     assert!((v.norm() - 1.0).abs() < 1e-12);
@@ -417,9 +421,17 @@ fn round_trip_v0_1_2_five_band() {
         // ab_magnitude(4) is the canonical r-band slot. For row 0, r-flux=3.0
         // → 22.5 - 2.5*log10(3) ≈ 21.30. ab_magnitude(0) (FUV) returns None
         // because the slot is zero.
-        assert!(e.ab_magnitude(NsaVersion::R_BAND_IDX).is_some());
-        assert_eq!(e.ab_magnitude(0), None, "FUV slot is zero, must be None");
-        assert_eq!(e.ab_magnitude(1), None, "NUV slot is zero, must be None");
+        assert!(e.sersic_ab_magnitude(NsaVersion::R_BAND_IDX).is_some());
+        assert_eq!(
+            e.sersic_ab_magnitude(0),
+            None,
+            "FUV slot is zero, must be None"
+        );
+        assert_eq!(
+            e.sersic_ab_magnitude(1),
+            None,
+            "NUV slot is zero, must be None"
+        );
     }
 }
 

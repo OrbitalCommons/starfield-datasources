@@ -28,6 +28,9 @@
 
 pub mod catalog;
 pub mod downloader;
+pub mod traits;
 
+#[cfg(feature = "radial-profiles")]
+pub use catalog::N_PROFILE_RADII;
 pub use catalog::{NsaCatalog, NsaEntry, NsaVersion, BANDS, N_BANDS};
 pub use downloader::download_nsa;

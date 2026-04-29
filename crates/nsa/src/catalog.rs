@@ -11,13 +11,16 @@ use std::path::Path;
 
 use nalgebra as na;
 use serde::{Deserialize, Serialize};
-use starfield::catalogs::{StarCatalog, StarData};
+use starfield::catalogs::{IsophoteSample, StarCatalog, StarData};
 use starfield::{Result, StarfieldError};
 
 use fitsio_pure::bintable::{
     parse_binary_table_columns, read_binary_column, BinaryColumnData, BinaryColumnDescriptor,
 };
 use fitsio_pure::hdu::{parse_fits, Hdu, HduInfo};
+
+#[cfg(feature = "radial-profiles")]
+use std::sync::OnceLock;
 
 /// Number of bands in `NsaEntry`'s flux arrays. Always 7; v0_1_2 (5-band)
 /// files are padded with zeros in the FUV/NUV slots so the in-memory layout
@@ -73,11 +76,26 @@ impl NsaVersion {
     }
 }
 
+/// Number of radii at which the NSA stores its measured azimuthally-averaged
+/// surface-brightness profile and its Stokes-derived isophote series. Always
+/// 15 for both v0_1_2 and v1_0_1.
+#[cfg(feature = "radial-profiles")]
+pub const N_PROFILE_RADII: usize = 15;
+
 /// One galaxy from the NASA-Sloan Atlas.
 ///
-/// All units follow NSA's published conventions (mostly arcsec, deg,
-/// nanomaggies). See <https://www.sdss.org/dr17/manga/manga-target-selection/nsa/>
-/// for the full column reference.
+/// Field naming follows the underlying NSA columns case-flattened to snake
+/// case; units follow NSA's conventions (arcsec, degrees, nanomaggies, mag).
+/// See <https://www.sdss.org/dr17/manga/manga-target-selection/nsa/> for the
+/// full reference.
+///
+/// All [f32; 7] band-arrays use the canonical 7-slot layout
+/// `[FUV, NUV, u, g, r, i, z]`. v0_1_2 (5-band) source files have FUV/NUV
+/// padded with zero so callers see a stable shape regardless of source.
+///
+/// Most non-Sérsic fields are `Option`-typed because v0_1_2 doesn't carry
+/// every column v1_0_1 does. A `None` means the column was absent from the
+/// source FITS file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NsaEntry {
     /// NSA's stable per-galaxy ID (`NSAID` column).
@@ -88,6 +106,8 @@ pub struct NsaEntry {
     pub dec: f64,
     /// Heliocentric redshift.
     pub z: f32,
+
+    // ---- Sérsic structural fit (always present) -----------------------------
     /// Sérsic effective (half-light) radius, arcsec, fit in r-band.
     pub sersic_th50: f32,
     /// Sérsic index *n*.
@@ -100,6 +120,105 @@ pub struct NsaEntry {
     pub sersic_flux: [f32; 7],
     /// Inverse variance of the Sérsic flux per band.
     pub sersic_flux_ivar: [f32; 7],
+
+    // ---- broadband photometry (NMGY) — drives Photometry trait impl --------
+    /// Per-band broadband flux (`NMGY` column), nanomaggies. Distinct from
+    /// `sersic_flux` (which integrates the parametric Sérsic fit) — `NMGY` is
+    /// a direct aperture-integrated measurement.
+    pub nmgy: Option<[f32; 7]>,
+    /// Inverse variance of `nmgy` (`NMGY_IVAR`).
+    pub nmgy_ivar: Option<[f32; 7]>,
+    /// Galactic extinction per band (`EXTINCTION`), magnitudes.
+    pub extinction: Option<[f32; 7]>,
+    /// K-correction per band (`KCORRECT`), magnitudes.
+    pub kcorrect: Option<[f32; 7]>,
+
+    // ---- cheap morphology proxies (drive IsophoteSeries trait impl) --------
+    /// Axis ratio *b/a* at the 50% light radius (`BA50`).
+    pub ba50: Option<f32>,
+    /// Position angle at the 50% light radius (`PHI50`), degrees east of north.
+    pub phi50: Option<f32>,
+    /// Axis ratio at the 90% light radius (`BA90`).
+    pub ba90: Option<f32>,
+    /// Position angle at the 90% light radius (`PHI90`), degrees east of north.
+    pub phi90: Option<f32>,
+    /// Petrosian half-light radius (`PETROTH50`), arcsec.
+    pub petroth50: Option<f32>,
+    /// Petrosian 90%-light radius (`PETROTH90`), arcsec. The concentration
+    /// index `petroth90 / petroth50` separates early- from late-type morphology.
+    pub petroth90: Option<f32>,
+
+    // ---- disturbance / clumpiness flags ------------------------------------
+    /// Per-band asymmetry index (`ASYMMETRY`); high values indicate disturbed
+    /// or merging systems.
+    pub asymmetry: Option<[f32; 7]>,
+    /// Per-band clumpiness index (`CLUMPY`); high values indicate bright
+    /// star-forming knots not captured by a smooth surface-brightness profile.
+    pub clumpy: Option<[f32; 7]>,
+
+    // ---- distance + mass for science filtering -----------------------------
+    /// Local-flow-corrected distance (`ZDIST`), redshift units (multiply by
+    /// `c` to get km/s, divide by H0 for Mpc).
+    pub zdist: Option<f32>,
+    /// Uncertainty on `zdist` (`ZDIST_ERR`).
+    pub zdist_err: Option<f32>,
+    /// Stellar mass (`MASS`), in solar masses (already divided by *h*).
+    pub mass: Option<f32>,
+    /// Per-band stellar mass-to-light ratio (`MTOL`), solar units.
+    pub mtol: Option<[f32; 7]>,
+
+    /// Pre-materialized 2-sample isophote series at the 50% / 90% Petrosian
+    /// light radii. `None` if any of the six required scalars
+    /// (`BA50`/`PHI50`/`BA90`/`PHI90`/`PETROTH50`/`PETROTH90`) is absent.
+    /// Populated at load time so the [`starfield::catalogs::IsophoteSeries`]
+    /// trait impl returns a slice straight off the entry without allocation.
+    /// Skipped during serialization (upstream `IsophoteSample` doesn't impl
+    /// serde); callers that round-trip the entry through serde must
+    /// reconstruct via [`NsaEntry::rebuild_isophote_cache`].
+    #[serde(skip)]
+    pub isophote_samples: Option<[IsophoteSample; 2]>,
+
+    // ---- measured radial-profile / Stokes-isophote arrays (heavy) ----------
+    /// Radii at which `profmean` is sampled (`PROFTHETA`), arcseconds. Always
+    /// 15 entries (or `None` if the column was absent).
+    #[cfg(feature = "radial-profiles")]
+    pub proftheta: Option<[f32; N_PROFILE_RADII]>,
+    /// Mean surface brightness sampled at `proftheta` per band (`PROFMEAN`),
+    /// nanomaggies / arcsec². Layout is `[radius_idx][band_idx]` with the
+    /// canonical 7-slot band layout (FUV/NUV zeroed for v0_1_2).
+    #[cfg(feature = "radial-profiles")]
+    pub profmean: Option<[[f32; 7]; N_PROFILE_RADII]>,
+    /// Inverse variance of `profmean` (`PROFMEAN_IVAR`), same shape.
+    #[cfg(feature = "radial-profiles")]
+    pub profmean_ivar: Option<[[f32; 7]; N_PROFILE_RADII]>,
+    /// Stokes Q at each radius and band (`QSTOKES`).
+    #[cfg(feature = "radial-profiles")]
+    pub qstokes: Option<[[f32; 7]; N_PROFILE_RADII]>,
+    /// Stokes U at each radius and band (`USTOKES`).
+    #[cfg(feature = "radial-profiles")]
+    pub ustokes: Option<[[f32; 7]; N_PROFILE_RADII]>,
+    /// Axis ratio derived from Q/U at each radius and band (`BASTOKES`).
+    #[cfg(feature = "radial-profiles")]
+    pub bastokes: Option<[[f32; 7]; N_PROFILE_RADII]>,
+    /// Position angle derived from Q/U at each radius and band (`PHISTOKES`),
+    /// degrees east of north.
+    #[cfg(feature = "radial-profiles")]
+    pub phistokes: Option<[[f32; 7]; N_PROFILE_RADII]>,
+
+    /// Cached `f64` view of `proftheta`, lazily filled on first
+    /// [`starfield::catalogs::RadialProfile::profile_radii_arcsec`] call.
+    /// Skipped during serialization (rebuilt on demand from `proftheta`).
+    #[cfg(feature = "radial-profiles")]
+    #[serde(skip)]
+    pub(crate) radii_cache: OnceLock<Vec<f64>>,
+    /// Cached `f64` view of `profmean[band]`, one cell per band.
+    #[cfg(feature = "radial-profiles")]
+    #[serde(skip)]
+    pub(crate) brightness_cache: [OnceLock<Vec<f64>>; 7],
+    /// Cached `f64` view of `profmean_ivar[band]`, one cell per band.
+    #[cfg(feature = "radial-profiles")]
+    #[serde(skip)]
+    pub(crate) brightness_ivar_cache: [OnceLock<Vec<f64>>; 7],
 }
 
 impl NsaEntry {
@@ -110,10 +229,46 @@ impl NsaEntry {
         na::Vector3::new(dec.cos() * ra.cos(), dec.cos() * ra.sin(), dec.sin())
     }
 
-    /// Approximate AB magnitude for one band from the Sérsic flux. Returns
-    /// `None` if the flux is non-positive (NSA stores zero/negative for
-    /// unmeasured or pathological cases).
-    pub fn ab_magnitude(&self, band_idx: usize) -> Option<f64> {
+    /// Rebuild [`Self::isophote_samples`] from the underlying scalars. Useful
+    /// after deserializing an entry, since `isophote_samples` is `#[serde(skip)]`.
+    /// Returns `true` if the cache is now populated, `false` if any required
+    /// scalar was missing.
+    pub fn rebuild_isophote_cache(&mut self) -> bool {
+        let iso = match (
+            self.petroth50,
+            self.petroth90,
+            self.ba50,
+            self.phi50,
+            self.ba90,
+            self.phi90,
+        ) {
+            (Some(p50), Some(p90), Some(b50), Some(ph50), Some(b90), Some(ph90)) => Some([
+                IsophoteSample {
+                    radius_arcsec: p50 as f64,
+                    axis_ratio: b50 as f64,
+                    position_angle_deg: ph50 as f64,
+                },
+                IsophoteSample {
+                    radius_arcsec: p90 as f64,
+                    axis_ratio: b90 as f64,
+                    position_angle_deg: ph90 as f64,
+                },
+            ]),
+            _ => None,
+        };
+        self.isophote_samples = iso;
+        self.isophote_samples.is_some()
+    }
+
+    /// Approximate AB magnitude for one band derived from `sersic_flux` —
+    /// the *parametric* Sérsic-integrated flux. Distinct from the
+    /// [`starfield::catalogs::Photometry`] trait's `ab_magnitude`, which
+    /// uses the broadband `NMGY` aperture flux. Both measurements are
+    /// useful but they're not the same number.
+    ///
+    /// Returns `None` if the flux is non-positive (NSA stores zero/negative
+    /// for unmeasured or pathological cases) or `band_idx` is out of range.
+    pub fn sersic_ab_magnitude(&self, band_idx: usize) -> Option<f64> {
         let f = *self.sersic_flux.get(band_idx)?;
         if f <= 0.0 {
             return None;
@@ -194,6 +349,70 @@ impl NsaCatalog {
         let flux_ivar =
             read_f32_band_array(&bytes, hdu, &columns, &by_name, flux_ivar_name, version)?;
 
+        // ---- Optional Part-2 columns -------------------------------------
+        // Each `_opt` helper returns `Ok(None)` if the column is absent (so
+        // v0_1_2 files that lack a given v1_0_1 column load fine).
+        let nmgy = read_f32_band_array_opt(&bytes, hdu, &columns, &by_name, "NMGY", version)?;
+        let nmgy_ivar =
+            read_f32_band_array_opt(&bytes, hdu, &columns, &by_name, "NMGY_IVAR", version)?;
+        let extinction =
+            read_f32_band_array_opt(&bytes, hdu, &columns, &by_name, "EXTINCTION", version)?;
+        let kcorrect =
+            read_f32_band_array_opt(&bytes, hdu, &columns, &by_name, "KCORRECT", version)?;
+
+        let ba50 = read_f32_col_opt(&bytes, hdu, &columns, &by_name, "BA50")?;
+        let phi50 = read_f32_col_opt(&bytes, hdu, &columns, &by_name, "PHI50")?;
+        let ba90 = read_f32_col_opt(&bytes, hdu, &columns, &by_name, "BA90")?;
+        let phi90 = read_f32_col_opt(&bytes, hdu, &columns, &by_name, "PHI90")?;
+        let petroth50 = read_f32_col_opt(&bytes, hdu, &columns, &by_name, "PETROTH50")?;
+        let petroth90 = read_f32_col_opt(&bytes, hdu, &columns, &by_name, "PETROTH90")?;
+
+        let asymmetry =
+            read_f32_band_array_opt(&bytes, hdu, &columns, &by_name, "ASYMMETRY", version)?;
+        let clumpy = read_f32_band_array_opt(&bytes, hdu, &columns, &by_name, "CLUMPY", version)?;
+
+        let zdist = read_f32_col_opt(&bytes, hdu, &columns, &by_name, "ZDIST")?;
+        let zdist_err = read_f32_col_opt(&bytes, hdu, &columns, &by_name, "ZDIST_ERR")?;
+        let mass = read_f32_col_opt(&bytes, hdu, &columns, &by_name, "MASS")?;
+        let mtol = read_f32_band_array_opt(&bytes, hdu, &columns, &by_name, "MTOL", version)?;
+
+        // Heavy radial-profile / Stokes arrays — only loaded when the feature
+        // is enabled. Each is `15 radii × n_source_bands(version)` flat in the
+        // FITS file, remapped to `[N_PROFILE_RADII][N_BANDS]` in memory with
+        // FUV/NUV padded to zero for v0_1_2.
+        #[cfg(feature = "radial-profiles")]
+        let proftheta = read_f32_fixed_array_opt::<{ N_PROFILE_RADII }>(
+            &bytes,
+            hdu,
+            &columns,
+            &by_name,
+            "PROFTHETA",
+        )?;
+        #[cfg(feature = "radial-profiles")]
+        let profmean =
+            read_f32_radial_band_array_opt(&bytes, hdu, &columns, &by_name, "PROFMEAN", version)?;
+        #[cfg(feature = "radial-profiles")]
+        let profmean_ivar = read_f32_radial_band_array_opt(
+            &bytes,
+            hdu,
+            &columns,
+            &by_name,
+            "PROFMEAN_IVAR",
+            version,
+        )?;
+        #[cfg(feature = "radial-profiles")]
+        let qstokes =
+            read_f32_radial_band_array_opt(&bytes, hdu, &columns, &by_name, "QSTOKES", version)?;
+        #[cfg(feature = "radial-profiles")]
+        let ustokes =
+            read_f32_radial_band_array_opt(&bytes, hdu, &columns, &by_name, "USTOKES", version)?;
+        #[cfg(feature = "radial-profiles")]
+        let bastokes =
+            read_f32_radial_band_array_opt(&bytes, hdu, &columns, &by_name, "BASTOKES", version)?;
+        #[cfg(feature = "radial-profiles")]
+        let phistokes =
+            read_f32_radial_band_array_opt(&bytes, hdu, &columns, &by_name, "PHISTOKES", version)?;
+
         let n = nsaid.len();
         for (label, len) in [
             ("RA", ra.len()),
@@ -216,6 +435,31 @@ impl NsaCatalog {
 
         let mut entries = HashMap::with_capacity(n);
         for i in 0..n {
+            let row_ba50 = ba50.as_ref().map(|v| v[i]);
+            let row_phi50 = phi50.as_ref().map(|v| v[i]);
+            let row_ba90 = ba90.as_ref().map(|v| v[i]);
+            let row_phi90 = phi90.as_ref().map(|v| v[i]);
+            let row_p50 = petroth50.as_ref().map(|v| v[i]);
+            let row_p90 = petroth90.as_ref().map(|v| v[i]);
+            // Pre-materialize the 2-sample isophote series if every required
+            // scalar is present, so the IsophoteSeries trait impl returns a
+            // slice straight off the entry.
+            let iso = match (row_p50, row_p90, row_ba50, row_phi50, row_ba90, row_phi90) {
+                (Some(p50), Some(p90), Some(b50), Some(ph50), Some(b90), Some(ph90)) => Some([
+                    IsophoteSample {
+                        radius_arcsec: p50 as f64,
+                        axis_ratio: b50 as f64,
+                        position_angle_deg: ph50 as f64,
+                    },
+                    IsophoteSample {
+                        radius_arcsec: p90 as f64,
+                        axis_ratio: b90 as f64,
+                        position_angle_deg: ph90 as f64,
+                    },
+                ]),
+                _ => None,
+            };
+
             let entry = NsaEntry {
                 nsaid: nsaid[i],
                 ra: ra[i],
@@ -227,6 +471,43 @@ impl NsaCatalog {
                 sersic_phi: phi[i],
                 sersic_flux: flux[i],
                 sersic_flux_ivar: flux_ivar[i],
+                nmgy: nmgy.as_ref().map(|v| v[i]),
+                nmgy_ivar: nmgy_ivar.as_ref().map(|v| v[i]),
+                extinction: extinction.as_ref().map(|v| v[i]),
+                kcorrect: kcorrect.as_ref().map(|v| v[i]),
+                ba50: row_ba50,
+                phi50: row_phi50,
+                ba90: row_ba90,
+                phi90: row_phi90,
+                petroth50: row_p50,
+                petroth90: row_p90,
+                asymmetry: asymmetry.as_ref().map(|v| v[i]),
+                clumpy: clumpy.as_ref().map(|v| v[i]),
+                zdist: zdist.as_ref().map(|v| v[i]),
+                zdist_err: zdist_err.as_ref().map(|v| v[i]),
+                mass: mass.as_ref().map(|v| v[i]),
+                mtol: mtol.as_ref().map(|v| v[i]),
+                isophote_samples: iso,
+                #[cfg(feature = "radial-profiles")]
+                proftheta: proftheta.as_ref().map(|v| v[i]),
+                #[cfg(feature = "radial-profiles")]
+                profmean: profmean.as_ref().map(|v| v[i]),
+                #[cfg(feature = "radial-profiles")]
+                profmean_ivar: profmean_ivar.as_ref().map(|v| v[i]),
+                #[cfg(feature = "radial-profiles")]
+                qstokes: qstokes.as_ref().map(|v| v[i]),
+                #[cfg(feature = "radial-profiles")]
+                ustokes: ustokes.as_ref().map(|v| v[i]),
+                #[cfg(feature = "radial-profiles")]
+                bastokes: bastokes.as_ref().map(|v| v[i]),
+                #[cfg(feature = "radial-profiles")]
+                phistokes: phistokes.as_ref().map(|v| v[i]),
+                #[cfg(feature = "radial-profiles")]
+                radii_cache: OnceLock::new(),
+                #[cfg(feature = "radial-profiles")]
+                brightness_cache: Default::default(),
+                #[cfg(feature = "radial-profiles")]
+                brightness_ivar_cache: Default::default(),
             };
             entries.insert(entry.nsaid, entry);
         }
@@ -269,8 +550,8 @@ impl StarCatalog for NsaCatalog {
         // tooling that operates on `StarData` (cone-search, mag filter)
         // still works for first-pass spatial / brightness queries.
         self.entries.values().map(|e| {
-            let mag = e.ab_magnitude(4).unwrap_or(f64::INFINITY);
-            let g_r = match (e.ab_magnitude(3), e.ab_magnitude(4)) {
+            let mag = e.sersic_ab_magnitude(4).unwrap_or(f64::INFINITY);
+            let g_r = match (e.sersic_ab_magnitude(3), e.sersic_ab_magnitude(4)) {
                 (Some(g), Some(r)) => Some(g - r),
                 _ => None,
             };
@@ -456,4 +737,153 @@ fn read_f32_band_array(
         out.push(a);
     }
     Ok(out)
+}
+
+/// Optional-column variant of [`read_f32_col`]. Returns `Ok(None)` when the
+/// column is absent so v0_1_2 files (which lack many v1_0_1 columns) load
+/// without error.
+fn read_f32_col_opt(
+    bytes: &[u8],
+    hdu: &Hdu,
+    columns: &[BinaryColumnDescriptor],
+    by_name: &HashMap<&str, usize>,
+    name: &str,
+) -> Result<Option<Vec<f32>>> {
+    if !by_name.contains_key(name) {
+        return Ok(None);
+    }
+    Ok(Some(read_f32_col(bytes, hdu, columns, by_name, name)?))
+}
+
+/// Optional-column variant of [`read_f32_band_array`].
+fn read_f32_band_array_opt(
+    bytes: &[u8],
+    hdu: &Hdu,
+    columns: &[BinaryColumnDescriptor],
+    by_name: &HashMap<&str, usize>,
+    name: &str,
+    version: NsaVersion,
+) -> Result<Option<Vec<[f32; N_BANDS]>>> {
+    if !by_name.contains_key(name) {
+        return Ok(None);
+    }
+    Ok(Some(read_f32_band_array(
+        bytes, hdu, columns, by_name, name, version,
+    )?))
+}
+
+/// Read a fixed-size 1-D float array column (e.g. `PROFTHETA` with repeat=15)
+/// and materialize one `[f32; N]` per row. Returns `Ok(None)` when absent.
+#[cfg(feature = "radial-profiles")]
+fn read_f32_fixed_array_opt<const N: usize>(
+    bytes: &[u8],
+    hdu: &Hdu,
+    columns: &[BinaryColumnDescriptor],
+    by_name: &HashMap<&str, usize>,
+    name: &str,
+) -> Result<Option<Vec<[f32; N]>>> {
+    if !by_name.contains_key(name) {
+        return Ok(None);
+    }
+    let idx = col_index(by_name, name)?;
+    if columns[idx].repeat != N {
+        return Err(StarfieldError::DataError(format!(
+            "NSA column `{}` has TFORM repeat {}, expected {}",
+            name, columns[idx].repeat, N
+        )));
+    }
+    let flat: Vec<f32> = match read_binary_column(bytes, hdu, idx)
+        .map_err(|e| StarfieldError::DataError(format!("read_binary_column({}): {}", name, e)))?
+    {
+        BinaryColumnData::Float(v) => v,
+        BinaryColumnData::Double(v) => v.into_iter().map(|x| x as f32).collect(),
+        other => {
+            return Err(StarfieldError::DataError(format!(
+                "NSA column `{}` expected float array, got {:?}",
+                name,
+                std::mem::discriminant(&other)
+            )))
+        }
+    };
+    if !flat.len().is_multiple_of(N) {
+        return Err(StarfieldError::DataError(format!(
+            "NSA column `{}` flattened length {} is not a multiple of {}",
+            name,
+            flat.len(),
+            N
+        )));
+    }
+    let n_rows = flat.len() / N;
+    let mut out = Vec::with_capacity(n_rows);
+    for chunk in flat.chunks_exact(N) {
+        let mut a = [0f32; N];
+        a.copy_from_slice(chunk);
+        out.push(a);
+    }
+    Ok(Some(out))
+}
+
+/// Read a 2-D radius × band float array (e.g. `PROFMEAN` with repeat=105 for
+/// v1_0_1 or 75 for v0_1_2) and materialize one `[[f32; N_BANDS]; N_PROFILE_RADII]`
+/// per row, with v0_1_2's 5 SDSS bands remapped into the canonical 7-slot layout
+/// (FUV/NUV at indices 0/1 zeroed). Returns `Ok(None)` when absent.
+///
+/// The on-file layout is row-major with `radius_idx` slow and `band_idx` fast,
+/// i.e. `flat[row][r * n_bands + b]`.
+#[cfg(feature = "radial-profiles")]
+fn read_f32_radial_band_array_opt(
+    bytes: &[u8],
+    hdu: &Hdu,
+    columns: &[BinaryColumnDescriptor],
+    by_name: &HashMap<&str, usize>,
+    name: &str,
+    version: NsaVersion,
+) -> Result<Option<Vec<[[f32; N_BANDS]; N_PROFILE_RADII]>>> {
+    if !by_name.contains_key(name) {
+        return Ok(None);
+    }
+    let idx = col_index(by_name, name)?;
+    let n_src = version.n_source_bands();
+    let expected_repeat = N_PROFILE_RADII * n_src;
+    if columns[idx].repeat != expected_repeat {
+        return Err(StarfieldError::DataError(format!(
+            "NSA column `{}` has TFORM repeat {}, expected {} ({} radii × {} bands for {:?})",
+            name, columns[idx].repeat, expected_repeat, N_PROFILE_RADII, n_src, version
+        )));
+    }
+    let flat: Vec<f32> = match read_binary_column(bytes, hdu, idx)
+        .map_err(|e| StarfieldError::DataError(format!("read_binary_column({}): {}", name, e)))?
+    {
+        BinaryColumnData::Float(v) => v,
+        BinaryColumnData::Double(v) => v.into_iter().map(|x| x as f32).collect(),
+        other => {
+            return Err(StarfieldError::DataError(format!(
+                "NSA column `{}` expected float array, got {:?}",
+                name,
+                std::mem::discriminant(&other)
+            )))
+        }
+    };
+    if !flat.len().is_multiple_of(expected_repeat) {
+        return Err(StarfieldError::DataError(format!(
+            "NSA column `{}` flattened length {} is not a multiple of {}",
+            name,
+            flat.len(),
+            expected_repeat
+        )));
+    }
+    let n_rows = flat.len() / expected_repeat;
+    let dst_start = match version {
+        NsaVersion::V1_0_1 => 0,
+        NsaVersion::V0_1_2 => 2,
+    };
+    let mut out = Vec::with_capacity(n_rows);
+    for row_chunk in flat.chunks_exact(expected_repeat) {
+        let mut row_arr = [[0f32; N_BANDS]; N_PROFILE_RADII];
+        for (r, radius_chunk) in row_chunk.chunks_exact(n_src).enumerate() {
+            row_arr[r][dst_start..dst_start + n_src].copy_from_slice(radius_chunk);
+        }
+        out.push(row_arr);
+    }
+    Ok(Some(out))
 }
