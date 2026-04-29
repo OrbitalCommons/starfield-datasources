@@ -19,9 +19,59 @@ use fitsio_pure::bintable::{
 };
 use fitsio_pure::hdu::{parse_fits, Hdu, HduInfo};
 
-/// SDSS+GALEX broad-band order used in NSA's `SERSIC_FLUX` / `SERSIC_FLUX_IVAR`
-/// arrays. Column index `i` in either array corresponds to `BANDS[i]`.
-pub const BANDS: [&str; 7] = ["FUV", "NUV", "u", "g", "r", "i", "z"];
+/// Number of bands in `NsaEntry`'s flux arrays. Always 7; v0_1_2 (5-band)
+/// files are padded with zeros in the FUV/NUV slots so the in-memory layout
+/// stays uniform.
+pub const N_BANDS: usize = 7;
+
+/// SDSS+GALEX broad-band order in `NsaEntry::sersic_flux` / `_ivar`. Index `i`
+/// in either array corresponds to `BANDS[i]`. v0_1_2 files don't carry GALEX
+/// FUV/NUV photometry — those slots are zero (and `ab_magnitude(0)` /
+/// `ab_magnitude(1)` will return `None` accordingly).
+pub const BANDS: [&str; N_BANDS] = ["FUV", "NUV", "u", "g", "r", "i", "z"];
+
+/// Which NSA release a catalog was loaded from. The two are detected at load
+/// time from the `SERSIC_FLUX` column's TFORM repeat (5 → v0_1_2, 7 → v1_0_1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NsaVersion {
+    /// 5-band SDSS-DR8-era release (`u, g, r, i, z`). Currently the only NSA
+    /// file available for free download (NYU mirror, ~0.5 GB).
+    V0_1_2,
+    /// 7-band release (`FUV, NUV, u, g, r, i, z`). SDSS DR17 used to host this
+    /// at `data.sdss.org/sas/dr17/manga/atlas/v1_0_1/nsa_v1_0_1.fits`; that path
+    /// 404s as of 2026-04-28. If the loader sees a 7-element flux array we
+    /// still parse it correctly.
+    V1_0_1,
+}
+
+impl NsaVersion {
+    /// Index of the `r` band in `NsaEntry::sersic_flux` for this version.
+    /// Always 4 in the 7-slot in-memory layout (v0_1_2's r band is shifted
+    /// from index 2 in-file to index 4 in-memory by the loader).
+    pub const R_BAND_IDX: usize = 4;
+
+    /// Index of the `g` band in the 7-slot in-memory layout.
+    pub const G_BAND_IDX: usize = 3;
+
+    /// Number of bands actually populated in the source FITS file.
+    pub fn n_source_bands(&self) -> usize {
+        match self {
+            NsaVersion::V0_1_2 => 5,
+            NsaVersion::V1_0_1 => 7,
+        }
+    }
+
+    fn from_repeat(repeat: usize) -> Result<Self> {
+        match repeat {
+            5 => Ok(NsaVersion::V0_1_2),
+            7 => Ok(NsaVersion::V1_0_1),
+            other => Err(StarfieldError::DataError(format!(
+                "NSA: SERSIC_FLUX repeat={} is neither 5 (v0_1_2) nor 7 (v1_0_1)",
+                other
+            ))),
+        }
+    }
+}
 
 /// One galaxy from the NASA-Sloan Atlas.
 ///
@@ -76,13 +126,22 @@ impl NsaEntry {
 #[derive(Debug, Clone)]
 pub struct NsaCatalog {
     entries: HashMap<u32, NsaEntry>,
+    version: NsaVersion,
 }
 
 impl NsaCatalog {
+    /// Empty catalog tagged as 7-band; useful for tests that build one up by
+    /// hand. `from_fits_file` overrides this with whatever the file declares.
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            version: NsaVersion::V1_0_1,
         }
+    }
+
+    /// Which NSA release this catalog was loaded from.
+    pub fn version(&self) -> NsaVersion {
+        self.version
     }
 
     /// Load every galaxy from a NSA `.fits` file. Reads the file into memory,
@@ -112,6 +171,17 @@ impl NsaCatalog {
             .filter_map(|(i, c)| c.name.as_deref().map(|n| (n, i)))
             .collect();
 
+        // v0_1_2 names the column `SERSICFLUX` (no underscore); v1_0_1 uses
+        // `SERSIC_FLUX`. Same story for the inverse-variance companion.
+        let flux_name = pick_name(&by_name, &["SERSIC_FLUX", "SERSICFLUX"])?;
+        let flux_ivar_name = pick_name(&by_name, &["SERSIC_FLUX_IVAR", "SERSICFLUX_IVAR"])?;
+
+        // Detect version from the resolved flux column's TFORM repeat. v0_1_2
+        // is 5-band (u/g/r/i/z); v1_0_1 is 7-band (adds GALEX FUV/NUV at
+        // indices 0-1).
+        let flux_idx = col_index(&by_name, flux_name)?;
+        let version = NsaVersion::from_repeat(columns[flux_idx].repeat)?;
+
         let nsaid = read_u32_col(&bytes, hdu, &columns, &by_name, "NSAID")?;
         let ra = read_f64_col(&bytes, hdu, &columns, &by_name, "RA")?;
         let dec = read_f64_col(&bytes, hdu, &columns, &by_name, "DEC")?;
@@ -120,8 +190,9 @@ impl NsaCatalog {
         let nser = read_f32_col(&bytes, hdu, &columns, &by_name, "SERSIC_N")?;
         let ba = read_f32_col(&bytes, hdu, &columns, &by_name, "SERSIC_BA")?;
         let phi = read_f32_col(&bytes, hdu, &columns, &by_name, "SERSIC_PHI")?;
-        let flux = read_f32_array_col(&bytes, hdu, &columns, &by_name, "SERSIC_FLUX", 7)?;
-        let flux_ivar = read_f32_array_col(&bytes, hdu, &columns, &by_name, "SERSIC_FLUX_IVAR", 7)?;
+        let flux = read_f32_band_array(&bytes, hdu, &columns, &by_name, flux_name, version)?;
+        let flux_ivar =
+            read_f32_band_array(&bytes, hdu, &columns, &by_name, flux_ivar_name, version)?;
 
         let n = nsaid.len();
         for (label, len) in [
@@ -132,8 +203,8 @@ impl NsaCatalog {
             ("SERSIC_N", nser.len()),
             ("SERSIC_BA", ba.len()),
             ("SERSIC_PHI", phi.len()),
-            ("SERSIC_FLUX", flux.len()),
-            ("SERSIC_FLUX_IVAR", flux_ivar.len()),
+            (flux_name, flux.len()),
+            (flux_ivar_name, flux_ivar.len()),
         ] {
             if len != n {
                 return Err(StarfieldError::DataError(format!(
@@ -160,7 +231,7 @@ impl NsaCatalog {
             entries.insert(entry.nsaid, entry);
         }
 
-        Ok(Self { entries })
+        Ok(Self { entries, version })
     }
 
     pub fn insert(&mut self, e: NsaEntry) {
@@ -244,6 +315,22 @@ fn col_index(by_name: &HashMap<&str, usize>, name: &str) -> Result<usize> {
     })
 }
 
+/// Return the first name from `candidates` that is present in `by_name`. Used
+/// to handle column-name spelling differences across NSA versions (e.g. v0_1_2
+/// has `SERSICFLUX`, v1_0_1 has `SERSIC_FLUX`). Errors include every candidate
+/// so the failure message is debuggable when an unfamiliar release is loaded.
+fn pick_name<'a>(by_name: &HashMap<&str, usize>, candidates: &[&'a str]) -> Result<&'a str> {
+    for &name in candidates {
+        if by_name.contains_key(name) {
+            return Ok(name);
+        }
+    }
+    Err(StarfieldError::DataError(format!(
+        "NSA: none of the expected column names {:?} were present",
+        candidates
+    )))
+}
+
 fn read_col(
     bytes: &[u8],
     hdu: &Hdu,
@@ -311,23 +398,25 @@ fn read_f32_col(
     }
 }
 
-fn read_f32_array_col(
+/// Read a per-band float array column and materialize one `[f32; 7]` per row,
+/// re-aligning v0_1_2's 5-band data into the canonical 7-slot in-memory layout
+/// (FUV/NUV slots zeroed). The actual on-file repeat must match what the
+/// detected version says (5 for v0_1_2, 7 for v1_0_1) — anything else is a
+/// shape mismatch and bails.
+fn read_f32_band_array(
     bytes: &[u8],
     hdu: &Hdu,
     columns: &[BinaryColumnDescriptor],
     by_name: &HashMap<&str, usize>,
     name: &str,
-    expected_len: usize,
-) -> Result<Vec<[f32; 7]>> {
-    assert_eq!(
-        expected_len, 7,
-        "NSA per-band arrays are always 7-element (FUV/NUV/u/g/r/i/z)"
-    );
+    version: NsaVersion,
+) -> Result<Vec<[f32; N_BANDS]>> {
     let idx = col_index(by_name, name)?;
-    if columns[idx].repeat != expected_len {
+    let n_src = version.n_source_bands();
+    if columns[idx].repeat != n_src {
         return Err(StarfieldError::DataError(format!(
-            "NSA column `{}` has TFORM repeat {}, expected {}",
-            name, columns[idx].repeat, expected_len
+            "NSA column `{}` has TFORM repeat {}, expected {} for {:?}",
+            name, columns[idx].repeat, n_src, version
         )));
     }
     let flat: Vec<f32> = match read_binary_column(bytes, hdu, idx)
@@ -343,19 +432,27 @@ fn read_f32_array_col(
             )))
         }
     };
-    if !flat.len().is_multiple_of(expected_len) {
+    if !flat.len().is_multiple_of(n_src) {
         return Err(StarfieldError::DataError(format!(
             "NSA column `{}` flattened length {} is not a multiple of {}",
             name,
             flat.len(),
-            expected_len
+            n_src
         )));
     }
-    let n_rows = flat.len() / expected_len;
+    let n_rows = flat.len() / n_src;
     let mut out = Vec::with_capacity(n_rows);
-    for chunk in flat.chunks_exact(expected_len) {
-        let mut a = [0f32; 7];
-        a.copy_from_slice(chunk);
+    // v1_0_1: source layout is already FUV, NUV, u, g, r, i, z — copy verbatim.
+    // v0_1_2: source layout is u, g, r, i, z — slot into indices 2..7, leaving
+    //          FUV (0) and NUV (1) at zero so `ab_magnitude(0)`/`(1)` returns
+    //          None for those rows.
+    let dst_start = match version {
+        NsaVersion::V1_0_1 => 0,
+        NsaVersion::V0_1_2 => 2,
+    };
+    for chunk in flat.chunks_exact(n_src) {
+        let mut a = [0f32; N_BANDS];
+        a[dst_start..dst_start + n_src].copy_from_slice(chunk);
         out.push(a);
     }
     Ok(out)
