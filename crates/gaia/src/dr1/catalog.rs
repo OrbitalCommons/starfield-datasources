@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 use starfield::{Result, StarfieldError};
 
 use crate::common::catalog::GaiaCatalogBase;
@@ -95,7 +95,7 @@ pub fn load_tgas_block_map(path: impl AsRef<Path>) -> Result<HashMap<u64, TgasBl
     let path = path.as_ref();
     let file = File::open(path).map_err(StarfieldError::IoError)?;
     let reader: Box<dyn BufRead> = if path.extension().is_some_and(|e| e == "gz") {
-        Box::new(BufReader::new(GzDecoder::new(BufReader::new(file))))
+        Box::new(BufReader::new(MultiGzDecoder::new(BufReader::new(file))))
     } else {
         Box::new(BufReader::new(file))
     };
