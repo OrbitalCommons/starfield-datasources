@@ -22,6 +22,7 @@ impl GaiaRelease for Dr2 {
     const MD5_FILENAME: &'static str = "MD5SUM.txt";
     const FILE_REGEX: &'static str = r#"(GaiaSource_\d+_\d+\.csv\.gz)"#;
     const CACHE_SUBDIR: &'static str = "gaia/dr2";
+    const TAP_TABLE: &'static str = "gaiadr2.gaia_source";
     const IS_ECSV: bool = false;
 
     type Entry = Dr2Entry;

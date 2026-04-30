@@ -56,6 +56,12 @@ pub trait GaiaRelease: 'static {
     /// Subdirectory under the starfield cache root (e.g. `"gaia/dr3"`).
     const CACHE_SUBDIR: &'static str;
 
+    /// Fully-qualified ADQL table name in the ESA Gaia archive (e.g.
+    /// `"gaiadr3.gaia_source"`). Used by [`crate::download::tap`] to build
+    /// release-typed ADQL queries that return CSV slotted into the same
+    /// `csv_header()` column layout the bulk files use.
+    const TAP_TABLE: &'static str;
+
     /// True if the file uses ECSV (leading `#`-prefixed YAML header before CSV).
     const IS_ECSV: bool = false;
 

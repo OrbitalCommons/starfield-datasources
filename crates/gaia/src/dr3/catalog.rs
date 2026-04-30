@@ -44,6 +44,34 @@ impl Dr3Catalog {
     pub fn merge(&mut self, other: Self) {
         self.0.merge(other.0);
     }
+
+    /// Insert the embedded Hipparcos-derived bright-star supplement into this
+    /// catalog. Returns the number of supplement entries actually added (rows
+    /// with `phot_g_mean_mag <= mag_limit`).
+    ///
+    /// See [`crate::dr3::supplement`] for the data provenance, the synthetic
+    /// `source_id` masking scheme, and the list of fields supplement entries
+    /// **don't** populate (no BP/RP, no RUWE/IPD, no RV, no GSP-Phot, no
+    /// classifications).
+    ///
+    /// `mag_limit` is applied per-row using the fitted Gaia G magnitude in
+    /// the embedded CSV; pass `f64::INFINITY` to take everything. Calling
+    /// this twice with the same `mag_limit` is idempotent — supplement
+    /// `source_id`s collide with themselves and the underlying HashMap
+    /// overwrites.
+    pub fn augment_missing(&mut self, mag_limit: f64) -> Result<usize> {
+        let rows = crate::dr3::supplement::parse_embedded_supplement()?;
+        let mut added = 0;
+        for row in &rows {
+            if row.fitted_g_mag > mag_limit {
+                continue;
+            }
+            self.0
+                .insert(crate::dr3::supplement::supplement_row_to_entry(row));
+            added += 1;
+        }
+        Ok(added)
+    }
 }
 
 impl Default for Dr3Catalog {

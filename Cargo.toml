@@ -36,3 +36,4 @@ arrow = "58"
 cdshealpix = "0.9.1"
 clap = { version = "4", features = ["derive"] }
 fitsio-pure = "0.11"
+plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "all_series", "ttf"] }
