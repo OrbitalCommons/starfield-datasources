@@ -19,7 +19,7 @@ license = "MIT"
 repository = "https://github.com/OrbitalCommons/starfield-datasources"
 
 [workspace.dependencies]
-starfield = { git = "https://github.com/OrbitalCommons/starfield.git" }
+starfield = "0.12"
 reqwest = { version = "0.12", features = ["blocking", "json", "multipart"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
