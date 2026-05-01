@@ -234,6 +234,44 @@ fn cone_loader_rejects_non_healpix_dir() {
 }
 
 #[test]
+fn cone_loader_rejects_mod_collapsed_healpix_dir() {
+    // A pre-PR-#42 mod-collapsed dir claims kind="healpix" but has
+    // num_shards < cell_count(level) — the loader would otherwise silently
+    // skip ~99% of the cone's cells. Forge such a manifest and check the
+    // loader bails with a clear message.
+    let out = tempfile::tempdir().unwrap();
+    let manifest = serde_json::json!({
+        "version": 1,
+        "release": "Dr3",
+        "mag_limit": 20.0,
+        "sharder": {
+            "kind": "healpix",
+            "num_shards": 128,
+            "healpix_level": 5,
+        },
+        "shard_sizes": vec![0u64; 128],
+        "shard_rows": vec![0u64; 128],
+        "processed_files": Vec::<String>::new(),
+        "kept_rows": 0,
+    });
+    std::fs::write(
+        out.path().join(".gaia-excerpt-manifest.json"),
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let cone = Cone::from_degrees(0.0, 0.0, 1.0);
+    let err = Dr3Catalog::from_excerpt_dir_for_cone(out.path(), cone, f64::INFINITY)
+        .expect_err("should refuse mod-collapsed healpix dir");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("one-file-per-cell") || msg.contains("mod-collapsed"),
+        "error should explain mod-collapsed layout, got: {}",
+        msg
+    );
+}
+
+#[test]
 fn cone_loader_errors_on_missing_dir() {
     let cone = Cone::from_degrees(0.0, 0.0, 1.0);
     let err = Dr3Catalog::from_excerpt_dir_for_cone(

@@ -112,6 +112,27 @@ impl<R: GaiaRelease> GaiaCatalogBase<R> {
             ))
         })?;
 
+        // The post-PR-#42 writer maps shard index 1:1 to HEALPix cell, so
+        // num_shards must equal `12 · 4^level`. Older mod-collapsed dirs
+        // (kind="healpix" but num_shards < cell_count) would silently lose
+        // ~99% of the cone's cells if we naively skipped out-of-range
+        // indices, so refuse them up front.
+        let expected_cells = 12u32 << (2 * level as u32);
+        if dir.num_shards() != expected_cells {
+            return Err(StarfieldError::DataError(format!(
+                "from_excerpt_dir_for_cone needs one-file-per-cell layout; manifest at {} \
+                 reports HEALPix level={} but num_shards={} (expected {}). This dir was \
+                 written by a mod-collapsed sharder; reshard with `gaia-excerpt --shard-by \
+                 healpix --healpix-level {}` against a recent build to get the \
+                 cone-searchable layout.",
+                dir.dir.display(),
+                level,
+                dir.num_shards(),
+                expected_cells,
+                level,
+            )));
+        }
+
         let cells = cdshealpix::nested::cone_coverage_approx_flat(
             level,
             cone.ra_rad,
@@ -125,9 +146,6 @@ impl<R: GaiaRelease> GaiaCatalogBase<R> {
         };
         for cell in cells.iter() {
             let cell = *cell as u32;
-            if cell >= dir.num_shards() {
-                continue;
-            }
             let Some(path) = dir.existing_shard_path(cell) else {
                 continue;
             };
