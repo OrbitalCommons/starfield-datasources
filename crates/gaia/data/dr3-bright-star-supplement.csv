@@ -2,7 +2,7 @@
 # Position propagated from Hipparcos epoch (J1991.25) to ref_epoch J2016.00 via Hipparcos PM.
 # fitted_g_mag uses G ≈ +0.0222 +1.0109*Hp -0.4422*(B-V) when B-V is present,
 # else the fallback G ≈ -0.2005 +0.9990*Hp.
-hip,ra_j2016,dec_j2016,parallax_mas,pmra_mas_yr,pmdec_mas_yr,b_v,fitted_g_mag
+hip,ra,dec,parallax_mas,pmra_mas_yr,pmdec_mas_yr,b_v,fitted_g_mag
 99301,302.351952,34.716328,3.7900,29.2900,-28.9100,1.1700,7.8146
 57987,178.408984,-49.320545,3.2400,-18.8500,-3.1300,0.0390,8.4158
 80626,246.947148,-73.086698,0.8200,-2.0900,-6.5300,-0.0150,8.2375

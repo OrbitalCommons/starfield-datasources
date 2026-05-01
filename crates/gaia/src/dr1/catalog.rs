@@ -58,6 +58,30 @@ impl Dr1Catalog {
             }
         }
     }
+
+    /// Insert the embedded Hipparcos-derived bright-star supplement into this
+    /// catalog. Returns the number of supplement entries actually added (rows
+    /// with `phot_g_mean_mag <= mag_limit`).
+    ///
+    /// See [`crate::dr1::supplement`] for the data provenance, the synthetic
+    /// `source_id` masking scheme, and the list of fields supplement entries
+    /// **don't** populate. DR1 specifically lacks BP/RP, so the supplement
+    /// fills only the astrometric core; the `tgas` block is `None` even
+    /// though the original Hipparcos cross-id is recoverable via
+    /// [`crate::dr1::supplement::decode_supplement_hip`].
+    pub fn augment_missing(&mut self, mag_limit: f64) -> Result<usize> {
+        let rows = crate::dr1::supplement::parse_embedded_supplement()?;
+        let mut added = 0;
+        for row in &rows {
+            if row.fitted_g_mag > mag_limit {
+                continue;
+            }
+            self.0
+                .insert(crate::dr1::supplement::supplement_row_to_entry(row));
+            added += 1;
+        }
+        Ok(added)
+    }
 }
 
 impl Default for Dr1Catalog {

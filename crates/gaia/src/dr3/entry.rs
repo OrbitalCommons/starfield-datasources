@@ -132,6 +132,9 @@ impl GaiaSource for Dr3Entry {
         Release::Dr3
     }
     fn b_v(&self) -> Option<f64> {
-        self.bp_rp.as_ref().and_then(|p| p.bp_rp.map(|v| v as f64))
+        self.bp_rp
+            .as_ref()
+            .and_then(|p| p.bp_rp)
+            .map(|v| crate::common::traits::bp_rp_to_johnson_b_v(v as f64))
     }
 }

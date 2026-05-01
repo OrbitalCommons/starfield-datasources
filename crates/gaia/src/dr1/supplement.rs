@@ -1,50 +1,48 @@
-//! Hipparcos-derived bright-star supplement for Gaia DR3.
+//! Hipparcos-derived bright-star supplement for Gaia DR1.
 //!
 //! See [`crate::common::supplement`] for the shared schema, ID-masking
 //! scheme, and provenance/missing-fields documentation. This module just
-//! glues the common helpers to DR3's reference epoch (J2016.0) and
-//! [`Dr3Entry`] type, and embeds the DR3-specific CSV produced by the
+//! glues the common helpers to DR1's reference epoch (J2015.0) and
+//! [`Dr1Entry`] type, and embeds the DR1-specific CSV produced by the
 //! `hipparcos-gaia-match` binary in `starfield-gaia-tools`.
 //!
-//! End-user entry point: [`Dr3Catalog::augment_missing`](crate::Dr3Catalog::augment_missing).
+//! End-user entry point: [`Dr1Catalog::augment_missing`](crate::Dr1Catalog::augment_missing).
+//!
+//! # DR1-specific notes
+//!
+//! Most DR1 sources have only a position (no proper motion or parallax) —
+//! TGAS provides 5-parameter astrometry for ~2M Hipparcos/Tycho-2 sources,
+//! the rest is 2-parameter. So DR1 is *especially* reliant on this
+//! supplement for bright stars: many bright Hipparcos entries with no DR1
+//! match whatsoever.
 
 use starfield::Result;
 
 use crate::common::supplement::{make_supplement_core, parse_supplement_csv, SupplementRow};
-use crate::dr3::entry::{AstrometricExtra, Classifications, DataLinks, Dr3Entry, IpdQuality};
+use crate::dr1::entry::{AstrometricExtra, Dr1Entry, ScanDirection};
 
-// Re-export the shared helpers under the dr3 module path for the public API
-// promised when this module shipped.
 pub use crate::common::supplement::{
     decode_supplement_hip, encode_supplement_source_id, is_supplement_source_id,
     SUPPLEMENT_SOURCE_ID_BIT,
 };
 
-/// J2016.0 — DR3's nominal reference epoch; every supplement position is
-/// already propagated to here, so callers don't need to PM-correct again.
-pub const SUPPLEMENT_REF_EPOCH: f64 = 2016.0;
+/// J2015.0 — DR1's reference epoch.
+pub const SUPPLEMENT_REF_EPOCH: f64 = 2015.0;
 
-const EMBEDDED_SUPPLEMENT_CSV: &str = include_str!("../../data/dr3-bright-star-supplement.csv");
+const EMBEDDED_SUPPLEMENT_CSV: &str = include_str!("../../data/dr1-bright-star-supplement.csv");
 
-/// Parse the embedded DR3 supplement.
+/// Parse the embedded DR1 supplement.
 pub fn parse_embedded_supplement() -> Result<Vec<SupplementRow>> {
     parse_supplement_csv(EMBEDDED_SUPPLEMENT_CSV)
 }
 
-/// Wrap a [`SupplementRow`] into a fully-formed [`Dr3Entry`].
-pub fn supplement_row_to_entry(r: &SupplementRow) -> Dr3Entry {
-    Dr3Entry {
+/// Wrap a [`SupplementRow`] into a fully-formed [`Dr1Entry`].
+pub fn supplement_row_to_entry(r: &SupplementRow) -> Dr1Entry {
+    Dr1Entry {
         core: make_supplement_core(r, SUPPLEMENT_REF_EPOCH),
-        designation: None,
-        pm: None,
-        parallax_over_error: None,
         astrometric_extra: AstrometricExtra::default(),
-        ipd: IpdQuality::default(),
-        bp_rp: None,
-        radial_velocity: None,
-        gspphot: None,
-        data_links: DataLinks::default(),
-        classifications: Classifications::default(),
+        scan_direction: ScanDirection::default(),
+        tgas: None,
     }
 }
 
@@ -85,6 +83,6 @@ mod tests {
         assert_eq!(entry.core.phot_g_mean_mag, 6.8);
         assert_eq!(entry.core.ref_epoch, SUPPLEMENT_REF_EPOCH);
         assert_eq!(decode_supplement_hip(entry.core.source_id), Some(12345));
-        assert!(entry.bp_rp.is_none());
+        assert!(entry.tgas.is_none());
     }
 }
