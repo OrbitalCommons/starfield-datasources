@@ -220,17 +220,21 @@ fn excerpt_from_reader_streams_without_disk() {
 
 #[test]
 fn healpix_shard_returns_in_range() {
-    let s = HealpixShard {
-        num_shards: 32,
-        level: 6,
-    };
+    // Level-3 = 768 cells. Tiny enough to fit per_shard_counts in a Vec
+    // without bloating the test, large enough to exercise multi-cell
+    // dispatch (50 random rows scattered across the sky → typically lands
+    // in 30+ distinct cells).
+    let level: u8 = 3;
+    let s = HealpixShard { level };
     let fixture = write_n_row_fixture(50);
     let out = tempfile::tempdir().unwrap();
     let summary =
         excerpt_csv_file::<Dr3, _, _>(fixture.path(), f64::INFINITY, out.path(), s, |_| true)
             .unwrap();
     assert_eq!(summary.kept_rows, 50);
-    // Every shard count must be in 0..num_shards; sum equals kept.
-    assert_eq!(summary.per_shard_counts.len(), 32);
+    // The writer's per_shard_counts vector is sized to the cell count
+    // (12 · 4^level); only cells that received entries are non-zero.
+    let expected_cells = HealpixShard::cell_count(level) as usize;
+    assert_eq!(summary.per_shard_counts.len(), expected_cells);
     assert_eq!(summary.per_shard_counts.iter().sum::<u64>(), 50);
 }

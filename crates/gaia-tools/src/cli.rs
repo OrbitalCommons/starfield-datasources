@@ -53,12 +53,18 @@ pub struct Cli {
     #[arg(long = "shard-by", value_enum, default_value_t = Sharder::Hash)]
     pub shard_by: Sharder,
 
-    /// Number of shard files to write into.
-    #[arg(long = "shards", default_value_t = 64)]
-    pub shards: u32,
+    /// Number of shard files to write into. Required for `--shard-by hash` and
+    /// `--shard-by id-range`; **must NOT be set** for `--shard-by healpix`
+    /// (the file count is determined by `--healpix-level` — one file per cell
+    /// for spatial coherence).
+    #[arg(long = "shards")]
+    pub shards: Option<u32>,
 
-    /// HEALPix depth used by `--shard-by healpix` (0..=29).
-    #[arg(long = "healpix-level", default_value_t = 6)]
+    /// HEALPix depth for `--shard-by healpix` (0..=29). One output file per
+    /// cell — `12 · 4^level` files total. Higher levels = finer pixels but
+    /// drastically more files (level 5 = 12,288; level 6 = 49,152;
+    /// level 7 = 196,608). Empty cells leave no file behind.
+    #[arg(long = "healpix-level", default_value_t = 5)]
     pub healpix_level: u8,
 
     /// Discard rows with `phot_g_mean_mag` greater than this at read time.
@@ -167,7 +173,33 @@ impl Cli {
                 "must pass either --input <files> or --from-release <release>".into(),
             ));
         }
+        match self.shard_by {
+            Sharder::Healpix => {
+                if self.shards.is_some() {
+                    return Err(StarfieldError::DataError(
+                        "--shards is incompatible with --shard-by healpix; the file count is \
+                         determined by --healpix-level (one file per cell). Drop --shards."
+                            .into(),
+                    ));
+                }
+            }
+            Sharder::Hash | Sharder::IdRange => {
+                if self.shards.is_none() {
+                    return Err(StarfieldError::DataError(format!(
+                        "--shard-by {:?} requires --shards <N> (number of buckets)",
+                        self.shard_by
+                    )));
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Effective shard count for `Sharder::Hash` and `Sharder::IdRange` (panics
+    /// if called for healpix — those derive their count from `--healpix-level`).
+    pub fn effective_bucket_count(&self) -> u32 {
+        self.shards
+            .expect("shards must be set for hash / id-range; call validate() before this")
     }
 }
 
