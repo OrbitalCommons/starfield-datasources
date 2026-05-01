@@ -4,34 +4,48 @@ use std::path::{Path, PathBuf};
 
 use starfield::Result;
 
-use crate::common::catalog::GaiaCatalogBase;
+use crate::common::catalog::{GaiaCatalog, MemoryResidentCatalog};
+use crate::common::cone::Cone;
+use crate::common::lazy::LazyLoadingCatalog;
 use crate::download::Downloader;
 use crate::dr2::entry::Dr2Entry;
 use crate::dr2::schema::Dr2;
 
 #[derive(Debug)]
-pub struct Dr2Catalog(pub GaiaCatalogBase<Dr2>);
+pub struct Dr2Catalog(pub MemoryResidentCatalog<Dr2>);
 
 impl Dr2Catalog {
     pub fn new() -> Self {
-        Self(GaiaCatalogBase::new())
+        Self(MemoryResidentCatalog::new())
     }
 
     pub fn from_csv_file(path: impl AsRef<Path>, mag_limit: f64) -> Result<Self> {
-        Ok(Self(GaiaCatalogBase::<Dr2>::from_csv_file(
+        Ok(Self(MemoryResidentCatalog::<Dr2>::from_csv_file(
             path, mag_limit,
         )?))
     }
 
-    pub fn inner(&self) -> &GaiaCatalogBase<Dr2> {
+    /// Load every DR2 entry intersecting `cone` from a HEALPix-sharded
+    /// excerpt directory. Convenience over [`LazyLoadingCatalog::open`] +
+    /// [`GaiaCatalog::materialize_cone`].
+    pub fn from_excerpt_dir_for_cone(
+        excerpt_dir: impl AsRef<Path>,
+        cone: Cone,
+        mag_limit: f64,
+    ) -> Result<Self> {
+        let lazy = LazyLoadingCatalog::<Dr2>::open(excerpt_dir)?;
+        Ok(Self(lazy.materialize_cone(cone, mag_limit)?))
+    }
+
+    pub fn inner(&self) -> &MemoryResidentCatalog<Dr2> {
         &self.0
     }
 
-    pub fn inner_mut(&mut self) -> &mut GaiaCatalogBase<Dr2> {
+    pub fn inner_mut(&mut self) -> &mut MemoryResidentCatalog<Dr2> {
         &mut self.0
     }
 
-    pub fn into_inner(self) -> GaiaCatalogBase<Dr2> {
+    pub fn into_inner(self) -> MemoryResidentCatalog<Dr2> {
         self.0
     }
 
@@ -72,9 +86,23 @@ impl Default for Dr2Catalog {
 }
 
 impl std::ops::Deref for Dr2Catalog {
-    type Target = GaiaCatalogBase<Dr2>;
+    type Target = MemoryResidentCatalog<Dr2>;
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl GaiaCatalog<Dr2> for Dr2Catalog {
+    fn entries_in_cone<'a>(
+        &'a self,
+        cone: Cone,
+        mag_limit: f64,
+    ) -> Result<Box<dyn Iterator<Item = Result<Dr2Entry>> + 'a>> {
+        self.0.entries_in_cone(cone, mag_limit)
+    }
+
+    fn len(&self) -> u64 {
+        <_ as GaiaCatalog<Dr2>>::len(&self.0)
     }
 }
 

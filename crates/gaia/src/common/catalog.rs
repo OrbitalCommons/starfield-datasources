@@ -1,4 +1,15 @@
-//! Generic in-memory catalog shared by all releases.
+//! Generic in-memory catalog shared by all releases, plus the
+//! [`GaiaCatalog`] trait that abstracts over storage backends.
+//!
+//! Two implementations live in the crate:
+//!
+//! - [`MemoryResidentCatalog<R>`] — the historical in-memory `HashMap` keyed
+//!   by `source_id`. Cone queries scan the whole map and clone matching
+//!   entries.
+//! - [`LazyLoadingCatalog<R>`](crate::common::lazy::LazyLoadingCatalog) —
+//!   reads only the HEALPix shards a cone touches, on every query, with no
+//!   in-memory cache. Use when most of the excerpt directory is irrelevant
+//!   to your queries (e.g. a cone covering 0.1% of the sky).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -6,34 +17,81 @@ use std::path::Path;
 use starfield::catalogs::{StarCatalog, StarData};
 use starfield::Result;
 
+use crate::common::cone::Cone;
 use crate::common::reader::CsvSourceReader;
 use crate::common::traits::{GaiaRelease, GaiaSource, Release};
+
+/// Storage-agnostic cone-query interface. Implementors decide whether the
+/// rows live in memory (cheap repeat queries, eager up-front load) or on
+/// disk (no up-front cost, every query re-reads the relevant shards).
+///
+/// `entries_in_cone` is the only required method; `materialize_cone` drains
+/// the iterator into a [`MemoryResidentCatalog`] for callers that want to
+/// reuse the result.
+pub trait GaiaCatalog<R: GaiaRelease> {
+    /// Stream entries within `cone` whose `phot_g_mean_mag <= mag_limit`.
+    /// The iterator yields `Result` per row so backends that read from disk
+    /// can surface I/O errors mid-stream without panicking.
+    fn entries_in_cone<'a>(
+        &'a self,
+        cone: Cone,
+        mag_limit: f64,
+    ) -> Result<Box<dyn Iterator<Item = Result<R::Entry>> + 'a>>;
+
+    /// Total row count this catalog can serve, regardless of cone or
+    /// magnitude. Lazy backends answer this from the on-disk manifest
+    /// without touching shard files.
+    ///
+    /// Returns `u64` (not `usize`) so the value is consistent across
+    /// 32- and 64-bit targets and matches the manifest's storage type;
+    /// callers that also have `StarCatalog` in scope must disambiguate
+    /// `cat.len()` via UFCS, e.g.
+    /// `<_ as GaiaCatalog<Dr3>>::len(&cat)`.
+    fn len(&self) -> u64;
+
+    /// True when [`len`](Self::len) is zero.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Drain the cone into a memory-resident catalog.
+    fn materialize_cone(&self, cone: Cone, mag_limit: f64) -> Result<MemoryResidentCatalog<R>> {
+        let mut catalog = MemoryResidentCatalog::with_mag_limit(mag_limit);
+        for entry in self.entries_in_cone(cone, mag_limit)? {
+            catalog.insert(entry?);
+        }
+        Ok(catalog)
+    }
+}
 
 /// In-memory Gaia catalog keyed by `source_id`, parameterized over a release marker.
 ///
 /// Per-release newtypes (`Dr1Catalog`, `Dr2Catalog`, `Dr3Catalog`) wrap this so users
 /// don't have to write turbofish at call sites.
 #[derive(Debug)]
-pub struct GaiaCatalogBase<R: GaiaRelease> {
+pub struct MemoryResidentCatalog<R: GaiaRelease> {
     stars: HashMap<u64, R::Entry>,
     mag_limit: f64,
 }
 
-impl<R: GaiaRelease> GaiaCatalogBase<R> {
+impl<R: GaiaRelease> MemoryResidentCatalog<R> {
     pub fn new() -> Self {
+        Self::with_mag_limit(f64::INFINITY)
+    }
+
+    /// Build an empty catalog with a recorded `mag_limit`. The cutoff is
+    /// metadata only — callers must still gate the entries they insert.
+    pub fn with_mag_limit(mag_limit: f64) -> Self {
         Self {
             stars: HashMap::new(),
-            mag_limit: f64::INFINITY,
+            mag_limit,
         }
     }
 
     /// Load a single `.csv` or `.csv.gz` file. Entries with `phot_g_mean_mag > mag_limit`
     /// are discarded as they stream past.
     pub fn from_csv_file(path: impl AsRef<Path>, mag_limit: f64) -> Result<Self> {
-        let mut catalog = Self {
-            stars: HashMap::new(),
-            mag_limit,
-        };
+        let mut catalog = Self::with_mag_limit(mag_limit);
         let reader = CsvSourceReader::<R>::open(path, mag_limit)?;
         for entry in reader {
             let entry = entry?;
@@ -81,13 +139,41 @@ impl<R: GaiaRelease> GaiaCatalogBase<R> {
     }
 }
 
-impl<R: GaiaRelease> Default for GaiaCatalogBase<R> {
+impl<R: GaiaRelease> Default for MemoryResidentCatalog<R> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<R: GaiaRelease> StarCatalog for GaiaCatalogBase<R> {
+impl<R: GaiaRelease> GaiaCatalog<R> for MemoryResidentCatalog<R> {
+    fn entries_in_cone<'a>(
+        &'a self,
+        cone: Cone,
+        mag_limit: f64,
+    ) -> Result<Box<dyn Iterator<Item = Result<R::Entry>> + 'a>> {
+        Ok(Box::new(self.stars.values().filter_map(move |e| {
+            let c = e.core();
+            if c.phot_g_mean_mag > mag_limit {
+                return None;
+            }
+            if !cone.contains_unit_vec(&c.unit_vector()) {
+                return None;
+            }
+            Some(Ok(e.clone()))
+        })))
+    }
+
+    fn len(&self) -> u64 {
+        self.stars.len() as u64
+    }
+}
+
+// `MemoryResidentCatalog` already implements `StarCatalog::len(&self) -> usize`;
+// `GaiaCatalog<R>::len(&self) -> u64` shadows the name. Inherent methods take
+// precedence and don't exist for `len`, so direct `cat.len()` is ambiguous when
+// both traits are in scope — callers disambiguate via UFCS, see the trait doc.
+
+impl<R: GaiaRelease> StarCatalog for MemoryResidentCatalog<R> {
     type Star = R::Entry;
 
     fn get_star(&self, id: usize) -> Option<&Self::Star> {

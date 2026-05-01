@@ -89,7 +89,7 @@ pub trait GaiaRelease: 'static {
     const IS_ECSV: bool = false;
 
     /// The entry type produced by parsing one row.
-    type Entry: GaiaSource + std::fmt::Debug + Send + 'static;
+    type Entry: GaiaSource + Clone + std::fmt::Debug + Send + 'static;
 
     /// Arrow schema describing the columns this release's parser consumes.
     fn arrow_schema() -> SchemaRef;
@@ -100,7 +100,7 @@ pub trait GaiaRelease: 'static {
 
     /// Format an entry as one CSV row matching the column layout in [`arrow_schema`].
     /// Floats use Rust's default `Display` (full round-trip precision); `Option::None`
-    /// becomes the empty string. Output is parseable by [`from_csv_file`](crate::common::catalog::GaiaCatalogBase::from_csv_file).
+    /// becomes the empty string. Output is parseable by [`from_csv_file`](crate::common::catalog::MemoryResidentCatalog::from_csv_file).
     fn format_csv_row(entry: &Self::Entry) -> String;
 
     /// Comma-joined header line listing every column in [`arrow_schema`] order.

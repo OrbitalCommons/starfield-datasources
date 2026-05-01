@@ -1,39 +1,58 @@
-//! DR3 catalog newtype — thin wrapper over [`GaiaCatalogBase`](crate::common::catalog::GaiaCatalogBase).
+//! DR3 catalog newtype — thin wrapper over [`MemoryResidentCatalog`](crate::common::catalog::MemoryResidentCatalog).
 
 use std::path::{Path, PathBuf};
 
 use starfield::Result;
 
-use crate::common::catalog::GaiaCatalogBase;
+use crate::common::catalog::{GaiaCatalog, MemoryResidentCatalog};
+use crate::common::cone::Cone;
+use crate::common::lazy::LazyLoadingCatalog;
 use crate::download::Downloader;
 use crate::dr3::entry::Dr3Entry;
 use crate::dr3::schema::Dr3;
 
 /// In-memory Gaia DR3 catalog, keyed by `source_id`.
 #[derive(Debug)]
-pub struct Dr3Catalog(pub GaiaCatalogBase<Dr3>);
+pub struct Dr3Catalog(pub MemoryResidentCatalog<Dr3>);
 
 impl Dr3Catalog {
     pub fn new() -> Self {
-        Self(GaiaCatalogBase::new())
+        Self(MemoryResidentCatalog::new())
     }
 
     /// Load a single `.csv` or `.csv.gz` file; discards stars fainter than `mag_limit`.
     pub fn from_csv_file(path: impl AsRef<Path>, mag_limit: f64) -> Result<Self> {
-        Ok(Self(GaiaCatalogBase::<Dr3>::from_csv_file(
+        Ok(Self(MemoryResidentCatalog::<Dr3>::from_csv_file(
             path, mag_limit,
         )?))
     }
 
-    pub fn inner(&self) -> &GaiaCatalogBase<Dr3> {
+    /// Load every DR3 entry intersecting `cone` from a HEALPix-sharded
+    /// excerpt directory (one produced by
+    /// `gaia-excerpt --shard-by healpix`).
+    ///
+    /// Convenience over [`LazyLoadingCatalog::open`] +
+    /// [`GaiaCatalog::materialize_cone`]; reach for the lazy variant
+    /// directly if you want streaming access or plan to issue more than
+    /// one cone query against the same directory.
+    pub fn from_excerpt_dir_for_cone(
+        excerpt_dir: impl AsRef<Path>,
+        cone: Cone,
+        mag_limit: f64,
+    ) -> Result<Self> {
+        let lazy = LazyLoadingCatalog::<Dr3>::open(excerpt_dir)?;
+        Ok(Self(lazy.materialize_cone(cone, mag_limit)?))
+    }
+
+    pub fn inner(&self) -> &MemoryResidentCatalog<Dr3> {
         &self.0
     }
 
-    pub fn inner_mut(&mut self) -> &mut GaiaCatalogBase<Dr3> {
+    pub fn inner_mut(&mut self) -> &mut MemoryResidentCatalog<Dr3> {
         &mut self.0
     }
 
-    pub fn into_inner(self) -> GaiaCatalogBase<Dr3> {
+    pub fn into_inner(self) -> MemoryResidentCatalog<Dr3> {
         self.0
     }
 
@@ -81,9 +100,23 @@ impl Default for Dr3Catalog {
 }
 
 impl std::ops::Deref for Dr3Catalog {
-    type Target = GaiaCatalogBase<Dr3>;
+    type Target = MemoryResidentCatalog<Dr3>;
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl GaiaCatalog<Dr3> for Dr3Catalog {
+    fn entries_in_cone<'a>(
+        &'a self,
+        cone: Cone,
+        mag_limit: f64,
+    ) -> Result<Box<dyn Iterator<Item = Result<Dr3Entry>> + 'a>> {
+        self.0.entries_in_cone(cone, mag_limit)
+    }
+
+    fn len(&self) -> u64 {
+        <_ as GaiaCatalog<Dr3>>::len(&self.0)
     }
 }
 

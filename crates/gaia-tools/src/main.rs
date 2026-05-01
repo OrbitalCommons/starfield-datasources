@@ -473,18 +473,11 @@ type BoxedPredicate<E> = Box<dyn FnMut(&E) -> bool + Send>;
 /// Compose mag/cone/id-range filters into a single closure. Cone filtering
 /// is done with great-circle distance via core unit vectors.
 fn build_predicate<E: GaiaSource + 'static>(args: &Cli) -> Result<BoxedPredicate<E>> {
-    let cone = args.cone;
     let id_range = args.id_range;
-    let cone_threshold = cone.as_ref().map(|c| (c.radius_deg.to_radians()).cos());
-    let cone_center = cone.as_ref().map(|c| {
-        let ra_rad = c.ra_deg.to_radians();
-        let dec_rad = c.dec_deg.to_radians();
-        nalgebra::Vector3::new(
-            dec_rad.cos() * ra_rad.cos(),
-            dec_rad.cos() * ra_rad.sin(),
-            dec_rad.sin(),
-        )
-    });
+    let cone = args
+        .cone
+        .as_ref()
+        .map(|c| starfield_gaia::Cone::from_degrees(c.ra_deg, c.dec_deg, c.radius_deg));
 
     Ok(Box::new(move |e: &E| {
         let c = e.core();
@@ -493,9 +486,8 @@ fn build_predicate<E: GaiaSource + 'static>(args: &Cli) -> Result<BoxedPredicate
                 return false;
             }
         }
-        if let (Some(center), Some(threshold)) = (cone_center.as_ref(), cone_threshold) {
-            let v = c.unit_vector();
-            if v.dot(center) < threshold {
+        if let Some(cone) = cone.as_ref() {
+            if !cone.contains_unit_vec(&c.unit_vector()) {
                 return false;
             }
         }
