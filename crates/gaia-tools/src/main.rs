@@ -157,7 +157,7 @@ where
             args.mag_limit.unwrap_or(f64::INFINITY),
             &args.output_dir,
             HashIdShard {
-                num_shards: args.shards,
+                num_shards: args.effective_bucket_count(),
             },
             predicate,
         )?,
@@ -166,7 +166,7 @@ where
             args.mag_limit.unwrap_or(f64::INFINITY),
             &args.output_dir,
             IdRangeShard {
-                num_shards: args.shards,
+                num_shards: args.effective_bucket_count(),
             },
             predicate,
         )?,
@@ -175,7 +175,6 @@ where
             args.mag_limit.unwrap_or(f64::INFINITY),
             &args.output_dir,
             HealpixShard {
-                num_shards: args.shards,
                 level: args.healpix_level,
             },
             predicate,
@@ -200,7 +199,7 @@ where
                 args.mag_limit.unwrap_or(f64::INFINITY),
                 &args.output_dir,
                 HashIdShard {
-                    num_shards: args.shards,
+                    num_shards: args.effective_bucket_count(),
                 },
                 predicate,
             )?,
@@ -209,7 +208,7 @@ where
                 args.mag_limit.unwrap_or(f64::INFINITY),
                 &args.output_dir,
                 IdRangeShard {
-                    num_shards: args.shards,
+                    num_shards: args.effective_bucket_count(),
                 },
                 predicate,
             )?,
@@ -218,7 +217,6 @@ where
                 args.mag_limit.unwrap_or(f64::INFINITY),
                 &args.output_dir,
                 HealpixShard {
-                    num_shards: args.shards,
                     level: args.healpix_level,
                 },
                 predicate,
@@ -236,7 +234,7 @@ where
                 args.mag_limit.unwrap_or(f64::INFINITY),
                 &args.output_dir,
                 HashIdShard {
-                    num_shards: args.shards,
+                    num_shards: args.effective_bucket_count(),
                 },
                 predicate,
             )?,
@@ -246,7 +244,7 @@ where
                 args.mag_limit.unwrap_or(f64::INFINITY),
                 &args.output_dir,
                 IdRangeShard {
-                    num_shards: args.shards,
+                    num_shards: args.effective_bucket_count(),
                 },
                 predicate,
             )?,
@@ -256,7 +254,6 @@ where
                 args.mag_limit.unwrap_or(f64::INFINITY),
                 &args.output_dir,
                 HealpixShard {
-                    num_shards: args.shards,
                     level: args.healpix_level,
                 },
                 predicate,

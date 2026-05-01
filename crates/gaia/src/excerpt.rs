@@ -107,24 +107,44 @@ impl<E: GaiaSource> ShardKey<E> for IdRangeShard {
     }
 }
 
-/// Shard by HEALPix cell at the given depth, modulo `num_shards`. Computes
-/// the pixel from the entry's RA/Dec via [`cdshealpix::nested::hash`], so it
-/// works identically across DR1/DR2/DR3.
+/// Shard by HEALPix cell at the given depth — exactly one output file per
+/// cell. Computes the pixel from the entry's RA/Dec via
+/// [`cdshealpix::nested::hash`] and uses it as the shard index directly, so
+/// `shard_NNNN.csv.gz` corresponds to HEALPix cell `NNNN` and is spatially
+/// coherent: a cone-search loader can compute the cells the cone covers and
+/// open only those files (instead of scanning all shards).
+///
+/// The number of shards is determined by `level`:
+///
+/// | Level | Cells (12·4ⁿ) | ~Cell side |
+/// |-------|---------------|------------|
+/// | 5     | 12,288        | 1.83°      |
+/// | 6     | 49,152        | 0.92°      |
+/// | 7     | 196,608       | 0.46°      |
+///
+/// File counts scale fast — keep `level` modest unless you really need fine
+/// spatial resolution. Empty cells leave no file behind (the writer opens
+/// shard files lazily on first row).
 #[derive(Debug, Clone, Copy)]
 pub struct HealpixShard {
-    pub num_shards: u32,
-    /// HEALPix depth (0..=29). Higher = finer pixels. Default 6 (49,152 pixels).
+    /// HEALPix depth (0..=29). Higher = finer pixels.
     pub level: u8,
+}
+
+impl HealpixShard {
+    /// Number of HEALPix cells at this depth (`12 · 4^level`).
+    pub const fn cell_count(level: u8) -> u32 {
+        12u32 << (2 * level as u32)
+    }
 }
 
 impl<E: GaiaSource> ShardKey<E> for HealpixShard {
     fn num_shards(&self) -> u32 {
-        self.num_shards
+        HealpixShard::cell_count(self.level)
     }
     fn shard_of(&self, entry: &E) -> u32 {
         let c = entry.core();
-        let pixel = cdshealpix::nested::hash(self.level, c.ra.to_radians(), c.dec.to_radians());
-        (pixel % self.num_shards as u64) as u32
+        cdshealpix::nested::hash(self.level, c.ra.to_radians(), c.dec.to_radians()) as u32
     }
 }
 
