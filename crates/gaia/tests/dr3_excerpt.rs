@@ -211,6 +211,7 @@ fn excerpt_from_reader_streams_without_disk() {
         f64::INFINITY,
         out.path(),
         HashIdShard { num_shards: 4 },
+        "test_reader_input.csv",
         |_| true,
     )
     .expect("excerpt from reader");
