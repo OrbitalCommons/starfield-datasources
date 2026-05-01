@@ -4,10 +4,12 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use starfield::catalogs::{StarCatalog, StarData};
-use starfield::Result;
+use starfield::{Result, StarfieldError};
 
+use crate::common::cone::Cone;
 use crate::common::reader::CsvSourceReader;
 use crate::common::traits::{GaiaRelease, GaiaSource, Release};
+use crate::excerpt::ExcerptDir;
 
 /// In-memory Gaia catalog keyed by `source_id`, parameterized over a release marker.
 ///
@@ -78,6 +80,68 @@ impl<R: GaiaRelease> GaiaCatalogBase<R> {
     /// splice in supplementary data (e.g. DR1 TGAS cross-ids).
     pub fn stars_iter_mut(&mut self) -> impl Iterator<Item = &mut R::Entry> {
         self.stars.values_mut()
+    }
+
+    /// Load every entry intersecting `cone` from a HEALPix-sharded excerpt
+    /// directory (one produced by `gaia-excerpt --shard-by healpix`).
+    ///
+    /// The directory's manifest must record a HEALPix sharder; hash / id-range
+    /// layouts are rejected (they have no spatial coherence to exploit). The
+    /// implementation:
+    ///
+    /// 1. Asks `cdshealpix::nested::cone_coverage_approx_flat` for the
+    ///    superset of cells touched by the cone at the manifest's level.
+    /// 2. Opens only the shard files for those cells (skipping empty cells
+    ///    whose file does not exist).
+    /// 3. Streams each row through `from_csv_file` with `mag_limit`, then
+    ///    drops boundary-cell stars whose unit-vector dot product with the
+    ///    cone centre falls below `cos(radius)`. The HEALPix covering is
+    ///    conservative; this post-filter gives an exact cone.
+    pub fn from_excerpt_dir_for_cone(
+        excerpt_dir: impl AsRef<Path>,
+        cone: Cone,
+        mag_limit: f64,
+    ) -> Result<Self> {
+        let dir = ExcerptDir::open(excerpt_dir)?;
+        let level = dir.healpix_level().ok_or_else(|| {
+            StarfieldError::DataError(format!(
+                "from_excerpt_dir_for_cone requires a HEALPix-sharded directory; \
+                 manifest at {} reports sharder kind={:?}",
+                dir.dir.display(),
+                dir.manifest.sharder.kind
+            ))
+        })?;
+
+        let cells = cdshealpix::nested::cone_coverage_approx_flat(
+            level,
+            cone.ra_rad,
+            cone.dec_rad,
+            cone.radius_rad,
+        );
+
+        let mut catalog = Self {
+            stars: HashMap::new(),
+            mag_limit,
+        };
+        for cell in cells.iter() {
+            let cell = *cell as u32;
+            if cell >= dir.num_shards() {
+                continue;
+            }
+            let Some(path) = dir.existing_shard_path(cell) else {
+                continue;
+            };
+            let reader = CsvSourceReader::<R>::open(&path, mag_limit)?;
+            for entry in reader {
+                let entry = entry?;
+                if !cone.contains_unit_vec(&entry.core().unit_vector()) {
+                    continue;
+                }
+                let id = entry.core().source_id;
+                catalog.stars.insert(id, entry);
+            }
+        }
+        Ok(catalog)
     }
 }
 

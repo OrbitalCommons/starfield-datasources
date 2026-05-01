@@ -9,6 +9,7 @@ use flate2::read::MultiGzDecoder;
 use starfield::{Result, StarfieldError};
 
 use crate::common::catalog::GaiaCatalogBase;
+use crate::common::cone::Cone;
 use crate::download::Downloader;
 use crate::dr1::entry::{Dr1Entry, TgasBlock};
 use crate::dr1::schema::Dr1;
@@ -26,6 +27,21 @@ impl Dr1Catalog {
     pub fn from_csv_file(path: impl AsRef<Path>, mag_limit: f64) -> Result<Self> {
         Ok(Self(GaiaCatalogBase::<Dr1>::from_csv_file(
             path, mag_limit,
+        )?))
+    }
+
+    /// Load every DR1 entry intersecting `cone` from a HEALPix-sharded
+    /// excerpt directory. See
+    /// [`GaiaCatalogBase::from_excerpt_dir_for_cone`].
+    pub fn from_excerpt_dir_for_cone(
+        excerpt_dir: impl AsRef<Path>,
+        cone: Cone,
+        mag_limit: f64,
+    ) -> Result<Self> {
+        Ok(Self(GaiaCatalogBase::<Dr1>::from_excerpt_dir_for_cone(
+            excerpt_dir,
+            cone,
+            mag_limit,
         )?))
     }
 

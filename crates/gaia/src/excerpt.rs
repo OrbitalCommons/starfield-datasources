@@ -741,3 +741,70 @@ fn filename_of(path: &Path) -> Result<String> {
             ))
         })
 }
+
+// =====================================================================================
+// Excerpt directory reader (companion to ShardedCsvWriter)
+// =====================================================================================
+
+/// Read-side handle to a directory written by [`ShardedCsvWriter`].
+///
+/// Pairs the on-disk [`Manifest`] with knowledge of the shard filename
+/// scheme so callers can map shard indices ↔ files without hardcoding
+/// the `shard_NNNNN.csv.gz` pattern.
+#[derive(Debug, Clone)]
+pub struct ExcerptDir {
+    pub dir: PathBuf,
+    pub manifest: Manifest,
+}
+
+impl ExcerptDir {
+    /// Open an excerpt directory. Errors if no manifest is found.
+    pub fn open(dir: impl AsRef<Path>) -> Result<Self> {
+        let dir = dir.as_ref().to_path_buf();
+        let manifest = Manifest::try_load(&dir)?.ok_or_else(|| {
+            StarfieldError::DataError(format!(
+                "no excerpt manifest at {} (directory may not be a gaia-excerpt output)",
+                dir.display()
+            ))
+        })?;
+        Ok(Self { dir, manifest })
+    }
+
+    /// HEALPix depth used when the directory was sharded by HEALPix; `None`
+    /// for hash / id-range / custom sharders.
+    pub fn healpix_level(&self) -> Option<u8> {
+        if self.manifest.sharder.kind == "healpix" {
+            self.manifest.sharder.healpix_level
+        } else {
+            None
+        }
+    }
+
+    /// Total number of shard buckets recorded in the manifest. For HEALPix this
+    /// is `12 · 4^level`; not every shard necessarily has a file on disk.
+    pub fn num_shards(&self) -> u32 {
+        self.manifest.sharder.num_shards
+    }
+
+    /// Path to shard file `index`, regardless of whether it exists on disk
+    /// (empty cells leave no file behind).
+    pub fn shard_path(&self, index: u32) -> PathBuf {
+        let width = digits_for(self.num_shards());
+        self.dir
+            .join(format!("shard_{:0width$}.csv.gz", index, width = width))
+    }
+
+    /// Like [`shard_path`](Self::shard_path) but returns `None` when the file
+    /// does not exist on disk (i.e. that bucket has no rows).
+    pub fn existing_shard_path(&self, index: u32) -> Option<PathBuf> {
+        let p = self.shard_path(index);
+        p.exists().then_some(p)
+    }
+
+    /// Existing shard files (in shard-index order). Empty buckets are skipped.
+    pub fn existing_shard_paths(&self) -> Vec<PathBuf> {
+        (0..self.num_shards())
+            .filter_map(|i| self.existing_shard_path(i))
+            .collect()
+    }
+}

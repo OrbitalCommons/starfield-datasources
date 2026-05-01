@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use starfield::Result;
 
 use crate::common::catalog::GaiaCatalogBase;
+use crate::common::cone::Cone;
 use crate::download::Downloader;
 use crate::dr3::entry::Dr3Entry;
 use crate::dr3::schema::Dr3;
@@ -22,6 +23,26 @@ impl Dr3Catalog {
     pub fn from_csv_file(path: impl AsRef<Path>, mag_limit: f64) -> Result<Self> {
         Ok(Self(GaiaCatalogBase::<Dr3>::from_csv_file(
             path, mag_limit,
+        )?))
+    }
+
+    /// Load every DR3 entry intersecting `cone` from a HEALPix-sharded
+    /// excerpt directory (one produced by
+    /// `gaia-excerpt --shard-by healpix`).
+    ///
+    /// See [`GaiaCatalogBase::from_excerpt_dir_for_cone`] for the algorithm
+    /// (cdshealpix cone coverage + per-row dot-product post-filter for an
+    /// exact cone). Errors out if the directory's manifest does not record
+    /// a HEALPix sharder.
+    pub fn from_excerpt_dir_for_cone(
+        excerpt_dir: impl AsRef<Path>,
+        cone: Cone,
+        mag_limit: f64,
+    ) -> Result<Self> {
+        Ok(Self(GaiaCatalogBase::<Dr3>::from_excerpt_dir_for_cone(
+            excerpt_dir,
+            cone,
+            mag_limit,
         )?))
     }
 

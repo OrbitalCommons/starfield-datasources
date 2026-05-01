@@ -37,7 +37,7 @@ pub mod dr2;
 #[cfg(feature = "dr3")]
 pub mod dr3;
 
-pub use common::{GaiaCatalogBase, GaiaCore, GaiaRelease, GaiaSource, Release, VarFlag};
+pub use common::{Cone, GaiaCatalogBase, GaiaCore, GaiaRelease, GaiaSource, Release, VarFlag};
 pub use download::Downloader;
 
 #[cfg(feature = "dr1")]

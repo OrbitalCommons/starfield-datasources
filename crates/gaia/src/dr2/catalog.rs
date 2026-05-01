@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use starfield::Result;
 
 use crate::common::catalog::GaiaCatalogBase;
+use crate::common::cone::Cone;
 use crate::download::Downloader;
 use crate::dr2::entry::Dr2Entry;
 use crate::dr2::schema::Dr2;
@@ -20,6 +21,21 @@ impl Dr2Catalog {
     pub fn from_csv_file(path: impl AsRef<Path>, mag_limit: f64) -> Result<Self> {
         Ok(Self(GaiaCatalogBase::<Dr2>::from_csv_file(
             path, mag_limit,
+        )?))
+    }
+
+    /// Load every DR2 entry intersecting `cone` from a HEALPix-sharded
+    /// excerpt directory. See
+    /// [`GaiaCatalogBase::from_excerpt_dir_for_cone`].
+    pub fn from_excerpt_dir_for_cone(
+        excerpt_dir: impl AsRef<Path>,
+        cone: Cone,
+        mag_limit: f64,
+    ) -> Result<Self> {
+        Ok(Self(GaiaCatalogBase::<Dr2>::from_excerpt_dir_for_cone(
+            excerpt_dir,
+            cone,
+            mag_limit,
         )?))
     }
 
