@@ -8,52 +8,50 @@ use std::path::{Path, PathBuf};
 use flate2::read::MultiGzDecoder;
 use starfield::{Result, StarfieldError};
 
-use crate::common::catalog::GaiaCatalogBase;
+use crate::common::catalog::{GaiaCatalog, MemoryResidentCatalog};
 use crate::common::cone::Cone;
+use crate::common::lazy::LazyLoadingCatalog;
 use crate::download::Downloader;
 use crate::dr1::entry::{Dr1Entry, TgasBlock};
 use crate::dr1::schema::Dr1;
 
 /// In-memory Gaia DR1 catalog, keyed by `source_id`.
 #[derive(Debug)]
-pub struct Dr1Catalog(pub GaiaCatalogBase<Dr1>);
+pub struct Dr1Catalog(pub MemoryResidentCatalog<Dr1>);
 
 impl Dr1Catalog {
     pub fn new() -> Self {
-        Self(GaiaCatalogBase::new())
+        Self(MemoryResidentCatalog::new())
     }
 
     /// Load a DR1 `GaiaSource_*.csv.gz` file.
     pub fn from_csv_file(path: impl AsRef<Path>, mag_limit: f64) -> Result<Self> {
-        Ok(Self(GaiaCatalogBase::<Dr1>::from_csv_file(
+        Ok(Self(MemoryResidentCatalog::<Dr1>::from_csv_file(
             path, mag_limit,
         )?))
     }
 
     /// Load every DR1 entry intersecting `cone` from a HEALPix-sharded
-    /// excerpt directory. See
-    /// [`GaiaCatalogBase::from_excerpt_dir_for_cone`].
+    /// excerpt directory. Convenience over [`LazyLoadingCatalog::open`] +
+    /// [`GaiaCatalog::materialize_cone`].
     pub fn from_excerpt_dir_for_cone(
         excerpt_dir: impl AsRef<Path>,
         cone: Cone,
         mag_limit: f64,
     ) -> Result<Self> {
-        Ok(Self(GaiaCatalogBase::<Dr1>::from_excerpt_dir_for_cone(
-            excerpt_dir,
-            cone,
-            mag_limit,
-        )?))
+        let lazy = LazyLoadingCatalog::<Dr1>::open(excerpt_dir)?;
+        Ok(Self(lazy.materialize_cone(cone, mag_limit)?))
     }
 
-    pub fn inner(&self) -> &GaiaCatalogBase<Dr1> {
+    pub fn inner(&self) -> &MemoryResidentCatalog<Dr1> {
         &self.0
     }
 
-    pub fn inner_mut(&mut self) -> &mut GaiaCatalogBase<Dr1> {
+    pub fn inner_mut(&mut self) -> &mut MemoryResidentCatalog<Dr1> {
         &mut self.0
     }
 
-    pub fn into_inner(self) -> GaiaCatalogBase<Dr1> {
+    pub fn into_inner(self) -> MemoryResidentCatalog<Dr1> {
         self.0
     }
 
@@ -107,9 +105,19 @@ impl Default for Dr1Catalog {
 }
 
 impl std::ops::Deref for Dr1Catalog {
-    type Target = GaiaCatalogBase<Dr1>;
+    type Target = MemoryResidentCatalog<Dr1>;
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl GaiaCatalog<Dr1> for Dr1Catalog {
+    fn entries_in_cone<'a>(
+        &'a self,
+        cone: Cone,
+        mag_limit: f64,
+    ) -> Result<Box<dyn Iterator<Item = Result<Dr1Entry>> + 'a>> {
+        self.0.entries_in_cone(cone, mag_limit)
     }
 }
 

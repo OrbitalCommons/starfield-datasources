@@ -11,7 +11,9 @@ use std::io::Write;
 
 use starfield::catalogs::StarCatalog;
 use starfield_gaia::excerpt::{excerpt_csv_file, HashIdShard, HealpixShard};
-use starfield_gaia::{Cone, Dr3, Dr3Catalog};
+use starfield_gaia::{
+    Cone, Dr3, Dr3Catalog, GaiaCatalog, LazyLoadingCatalog, MemoryResidentCatalog,
+};
 
 const HEADER: &str = "source_id,solution_id,ref_epoch,random_index,designation,ra,ra_error,dec,dec_error,ra_dec_corr,parallax,parallax_error,parallax_over_error,pm,pmra,pmra_error,pmdec,pmdec_error,l,b,ecl_lon,ecl_lat,phot_g_mean_mag,phot_g_mean_flux,phot_g_mean_flux_error,phot_g_n_obs,phot_variable_flag,astrometric_n_obs_al,astrometric_excess_noise,astrometric_excess_noise_sig,astrometric_primary_flag,duplicated_source,matched_observations,astrometric_n_good_obs_al,astrometric_n_bad_obs_al,astrometric_gof_al,astrometric_chi2_al,astrometric_params_solved,visibility_periods_used,astrometric_sigma5d_max,nu_eff_used_in_astrometry,pseudocolour,pseudocolour_error,ruwe,ipd_gof_harmonic_amplitude,ipd_gof_harmonic_phase,ipd_frac_multi_peak,ipd_frac_odd_win,phot_bp_mean_mag,phot_bp_mean_flux,phot_bp_mean_flux_error,phot_bp_n_obs,phot_rp_mean_mag,phot_rp_mean_flux,phot_rp_mean_flux_error,phot_rp_n_obs,bp_rp,bp_g,g_rp,phot_bp_rp_excess_factor,phot_proc_mode,radial_velocity,radial_velocity_error,rv_method_used,rv_nb_transits,rv_expected_sig_to_noise,rv_amplitude_robust,rv_template_teff,rv_template_logg,rv_template_fe_h,rv_atm_param_origin,teff_gspphot,teff_gspphot_lower,teff_gspphot_upper,logg_gspphot,mh_gspphot,distance_gspphot,distance_gspphot_lower,distance_gspphot_upper,azero_gspphot,ag_gspphot,ebpminrp_gspphot,libname_gspphot,has_xp_continuous,has_xp_sampled,has_rvs,has_epoch_photometry,has_epoch_rv,has_mcmc_gspphot,has_mcmc_msc,in_qso_candidates,in_galaxy_candidates,in_andromeda_survey,non_single_star,classprob_dsc_combmod_quasar,classprob_dsc_combmod_galaxy,classprob_dsc_combmod_star";
 
@@ -284,6 +286,151 @@ fn cone_loader_errors_on_missing_dir() {
     assert!(
         msg.contains("manifest") || msg.contains("excerpt"),
         "error should mention missing manifest, got: {}",
+        msg
+    );
+}
+
+// ====================================================================
+// Trait-level coverage: same fixture, exercised through both
+// implementations of `GaiaCatalog<Dr3>` to confirm callers can hold a
+// `&dyn GaiaCatalog<Dr3>` and swap backends.
+// ====================================================================
+
+/// Run the same cone query through `&dyn GaiaCatalog<Dr3>` and count
+/// the rows it produces. Used by the trait-level tests below.
+fn cone_count_via_trait(cat: &dyn GaiaCatalog<Dr3>, cone: Cone, mag_limit: f64) -> usize {
+    let mut n = 0;
+    for row in cat.entries_in_cone(cone, mag_limit).expect("entries_in_cone") {
+        let _ = row.expect("row");
+        n += 1;
+    }
+    n
+}
+
+#[test]
+fn lazy_loading_streams_entries_without_full_materialization() {
+    // Build a fixture with 30 inside / 70 outside, shard healpix-3, then
+    // open the dir as a LazyLoadingCatalog and stream the cone — no
+    // materialization, just count.
+    let centre_ra = 80.0;
+    let centre_dec = -10.0;
+    let (fixture, inside_ids) = fixture_with_cone(30, 70, centre_ra, centre_dec, 0.5);
+    let out = tempfile::tempdir().unwrap();
+    excerpt_csv_file::<Dr3, _, _>(
+        fixture.path(),
+        f64::INFINITY,
+        out.path(),
+        HealpixShard { level: 3 },
+        |_| true,
+    )
+    .unwrap();
+
+    let lazy = LazyLoadingCatalog::<Dr3>::open(out.path()).expect("open lazy");
+    let cone = Cone::from_degrees(centre_ra, centre_dec, 1.0);
+    let returned: std::collections::HashSet<u64> = lazy
+        .entries_in_cone(cone, f64::INFINITY)
+        .unwrap()
+        .map(|r| r.unwrap().core.source_id)
+        .collect();
+    assert_eq!(returned, inside_ids);
+}
+
+#[test]
+fn memory_resident_and_lazy_agree_on_same_cone() {
+    // Same fixture, same cone, two backends — the result sets must be
+    // identical (modulo ordering, hence the HashSet compare).
+    let centre_ra = 12.3;
+    let centre_dec = 45.6;
+    let (fixture, _inside_ids) = fixture_with_cone(40, 80, centre_ra, centre_dec, 0.5);
+    let out = tempfile::tempdir().unwrap();
+    excerpt_csv_file::<Dr3, _, _>(
+        fixture.path(),
+        f64::INFINITY,
+        out.path(),
+        HealpixShard { level: 3 },
+        |_| true,
+    )
+    .unwrap();
+
+    let mem: MemoryResidentCatalog<Dr3> =
+        MemoryResidentCatalog::from_csv_file(fixture.path(), f64::INFINITY).unwrap();
+    let lazy = LazyLoadingCatalog::<Dr3>::open(out.path()).unwrap();
+
+    let cone = Cone::from_degrees(centre_ra, centre_dec, 1.0);
+    let mem_ids: std::collections::HashSet<u64> = (&mem as &dyn GaiaCatalog<Dr3>)
+        .entries_in_cone(cone, f64::INFINITY)
+        .unwrap()
+        .map(|r| r.unwrap().core.source_id)
+        .collect();
+    let lazy_ids: std::collections::HashSet<u64> = (&lazy as &dyn GaiaCatalog<Dr3>)
+        .entries_in_cone(cone, f64::INFINITY)
+        .unwrap()
+        .map(|r| r.unwrap().core.source_id)
+        .collect();
+
+    assert_eq!(mem_ids, lazy_ids);
+    // And both agree with the trait-object count helper.
+    assert_eq!(
+        cone_count_via_trait(&mem, cone, f64::INFINITY),
+        cone_count_via_trait(&lazy, cone, f64::INFINITY)
+    );
+}
+
+#[test]
+fn materialize_cone_round_trips_through_lazy() {
+    // `materialize_cone` is the trait default that drains the iterator
+    // into a MemoryResidentCatalog. Verify it returns the same set as the
+    // direct iterator.
+    let centre_ra = 250.0;
+    let centre_dec = 12.0;
+    let (fixture, inside_ids) = fixture_with_cone(25, 75, centre_ra, centre_dec, 0.5);
+    let out = tempfile::tempdir().unwrap();
+    excerpt_csv_file::<Dr3, _, _>(
+        fixture.path(),
+        f64::INFINITY,
+        out.path(),
+        HealpixShard { level: 3 },
+        |_| true,
+    )
+    .unwrap();
+
+    let lazy = LazyLoadingCatalog::<Dr3>::open(out.path()).unwrap();
+    let cone = Cone::from_degrees(centre_ra, centre_dec, 1.0);
+    let materialized = lazy.materialize_cone(cone, f64::INFINITY).unwrap();
+    let ids: std::collections::HashSet<u64> =
+        materialized.stars().map(|s| s.core.source_id).collect();
+    assert_eq!(ids, inside_ids);
+}
+
+#[test]
+fn lazy_open_validates_release() {
+    // A manifest written by a Dr2 run shouldn't open as a LazyLoadingCatalog<Dr3>.
+    let out = tempfile::tempdir().unwrap();
+    let manifest = serde_json::json!({
+        "version": 1,
+        "release": "Dr2",
+        "mag_limit": 20.0,
+        "sharder": {
+            "kind": "healpix",
+            "num_shards": 12_288,
+            "healpix_level": 5,
+        },
+        "shard_sizes": vec![0u64; 12_288],
+        "shard_rows": vec![0u64; 12_288],
+        "processed_files": Vec::<String>::new(),
+        "kept_rows": 0,
+    });
+    std::fs::write(
+        out.path().join(".gaia-excerpt-manifest.json"),
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let err = LazyLoadingCatalog::<Dr3>::open(out.path()).expect_err("release mismatch");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("Dr2") && msg.contains("Dr3"),
+        "error should name both releases, got: {}",
         msg
     );
 }

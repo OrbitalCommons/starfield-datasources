@@ -1,41 +1,81 @@
-//! Generic in-memory catalog shared by all releases.
+//! Generic in-memory catalog shared by all releases, plus the
+//! [`GaiaCatalog`] trait that abstracts over storage backends.
+//!
+//! Two implementations live in the crate:
+//!
+//! - [`MemoryResidentCatalog<R>`] — the historical in-memory `HashMap` keyed
+//!   by `source_id`. Cone queries scan the whole map and clone matching
+//!   entries.
+//! - [`LazyLoadingCatalog<R>`](crate::common::lazy::LazyLoadingCatalog) —
+//!   reads only the HEALPix shards a cone touches, on every query, with no
+//!   in-memory cache. Use when most of the excerpt directory is irrelevant
+//!   to your queries (e.g. a cone covering 0.1% of the sky).
 
 use std::collections::HashMap;
 use std::path::Path;
 
 use starfield::catalogs::{StarCatalog, StarData};
-use starfield::{Result, StarfieldError};
+use starfield::Result;
 
 use crate::common::cone::Cone;
 use crate::common::reader::CsvSourceReader;
 use crate::common::traits::{GaiaRelease, GaiaSource, Release};
-use crate::excerpt::ExcerptDir;
+
+/// Storage-agnostic cone-query interface. Implementors decide whether the
+/// rows live in memory (cheap repeat queries, eager up-front load) or on
+/// disk (no up-front cost, every query re-reads the relevant shards).
+///
+/// `entries_in_cone` is the only required method; `materialize_cone` drains
+/// the iterator into a [`MemoryResidentCatalog`] for callers that want to
+/// reuse the result.
+pub trait GaiaCatalog<R: GaiaRelease> {
+    /// Stream entries within `cone` whose `phot_g_mean_mag <= mag_limit`.
+    /// The iterator yields `Result` per row so backends that read from disk
+    /// can surface I/O errors mid-stream without panicking.
+    fn entries_in_cone<'a>(
+        &'a self,
+        cone: Cone,
+        mag_limit: f64,
+    ) -> Result<Box<dyn Iterator<Item = Result<R::Entry>> + 'a>>;
+
+    /// Drain the cone into a memory-resident catalog.
+    fn materialize_cone(&self, cone: Cone, mag_limit: f64) -> Result<MemoryResidentCatalog<R>> {
+        let mut catalog = MemoryResidentCatalog::with_mag_limit(mag_limit);
+        for entry in self.entries_in_cone(cone, mag_limit)? {
+            catalog.insert(entry?);
+        }
+        Ok(catalog)
+    }
+}
 
 /// In-memory Gaia catalog keyed by `source_id`, parameterized over a release marker.
 ///
 /// Per-release newtypes (`Dr1Catalog`, `Dr2Catalog`, `Dr3Catalog`) wrap this so users
 /// don't have to write turbofish at call sites.
 #[derive(Debug)]
-pub struct GaiaCatalogBase<R: GaiaRelease> {
+pub struct MemoryResidentCatalog<R: GaiaRelease> {
     stars: HashMap<u64, R::Entry>,
     mag_limit: f64,
 }
 
-impl<R: GaiaRelease> GaiaCatalogBase<R> {
+impl<R: GaiaRelease> MemoryResidentCatalog<R> {
     pub fn new() -> Self {
+        Self::with_mag_limit(f64::INFINITY)
+    }
+
+    /// Build an empty catalog with a recorded `mag_limit`. The cutoff is
+    /// metadata only — callers must still gate the entries they insert.
+    pub fn with_mag_limit(mag_limit: f64) -> Self {
         Self {
             stars: HashMap::new(),
-            mag_limit: f64::INFINITY,
+            mag_limit,
         }
     }
 
     /// Load a single `.csv` or `.csv.gz` file. Entries with `phot_g_mean_mag > mag_limit`
     /// are discarded as they stream past.
     pub fn from_csv_file(path: impl AsRef<Path>, mag_limit: f64) -> Result<Self> {
-        let mut catalog = Self {
-            stars: HashMap::new(),
-            mag_limit,
-        };
+        let mut catalog = Self::with_mag_limit(mag_limit);
         let reader = CsvSourceReader::<R>::open(path, mag_limit)?;
         for entry in reader {
             let entry = entry?;
@@ -81,95 +121,34 @@ impl<R: GaiaRelease> GaiaCatalogBase<R> {
     pub fn stars_iter_mut(&mut self) -> impl Iterator<Item = &mut R::Entry> {
         self.stars.values_mut()
     }
-
-    /// Load every entry intersecting `cone` from a HEALPix-sharded excerpt
-    /// directory (one produced by `gaia-excerpt --shard-by healpix`).
-    ///
-    /// The directory's manifest must record a HEALPix sharder; hash / id-range
-    /// layouts are rejected (they have no spatial coherence to exploit). The
-    /// implementation:
-    ///
-    /// 1. Asks `cdshealpix::nested::cone_coverage_approx_flat` for the
-    ///    superset of cells touched by the cone at the manifest's level.
-    /// 2. Opens only the shard files for those cells (skipping empty cells
-    ///    whose file does not exist).
-    /// 3. Streams each row through `from_csv_file` with `mag_limit`, then
-    ///    drops boundary-cell stars whose unit-vector dot product with the
-    ///    cone centre falls below `cos(radius)`. The HEALPix covering is
-    ///    conservative; this post-filter gives an exact cone.
-    pub fn from_excerpt_dir_for_cone(
-        excerpt_dir: impl AsRef<Path>,
-        cone: Cone,
-        mag_limit: f64,
-    ) -> Result<Self> {
-        let dir = ExcerptDir::open(excerpt_dir)?;
-        let level = dir.healpix_level().ok_or_else(|| {
-            StarfieldError::DataError(format!(
-                "from_excerpt_dir_for_cone requires a HEALPix-sharded directory; \
-                 manifest at {} reports sharder kind={:?}",
-                dir.dir.display(),
-                dir.manifest.sharder.kind
-            ))
-        })?;
-
-        // The post-PR-#42 writer maps shard index 1:1 to HEALPix cell, so
-        // num_shards must equal `12 · 4^level`. Older mod-collapsed dirs
-        // (kind="healpix" but num_shards < cell_count) would silently lose
-        // ~99% of the cone's cells if we naively skipped out-of-range
-        // indices, so refuse them up front.
-        let expected_cells = 12u32 << (2 * level as u32);
-        if dir.num_shards() != expected_cells {
-            return Err(StarfieldError::DataError(format!(
-                "from_excerpt_dir_for_cone needs one-file-per-cell layout; manifest at {} \
-                 reports HEALPix level={} but num_shards={} (expected {}). This dir was \
-                 written by a mod-collapsed sharder; reshard with `gaia-excerpt --shard-by \
-                 healpix --healpix-level {}` against a recent build to get the \
-                 cone-searchable layout.",
-                dir.dir.display(),
-                level,
-                dir.num_shards(),
-                expected_cells,
-                level,
-            )));
-        }
-
-        let cells = cdshealpix::nested::cone_coverage_approx_flat(
-            level,
-            cone.ra_rad,
-            cone.dec_rad,
-            cone.radius_rad,
-        );
-
-        let mut catalog = Self {
-            stars: HashMap::new(),
-            mag_limit,
-        };
-        for cell in cells.iter() {
-            let cell = *cell as u32;
-            let Some(path) = dir.existing_shard_path(cell) else {
-                continue;
-            };
-            let reader = CsvSourceReader::<R>::open(&path, mag_limit)?;
-            for entry in reader {
-                let entry = entry?;
-                if !cone.contains_unit_vec(&entry.core().unit_vector()) {
-                    continue;
-                }
-                let id = entry.core().source_id;
-                catalog.stars.insert(id, entry);
-            }
-        }
-        Ok(catalog)
-    }
 }
 
-impl<R: GaiaRelease> Default for GaiaCatalogBase<R> {
+impl<R: GaiaRelease> Default for MemoryResidentCatalog<R> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<R: GaiaRelease> StarCatalog for GaiaCatalogBase<R> {
+impl<R: GaiaRelease> GaiaCatalog<R> for MemoryResidentCatalog<R> {
+    fn entries_in_cone<'a>(
+        &'a self,
+        cone: Cone,
+        mag_limit: f64,
+    ) -> Result<Box<dyn Iterator<Item = Result<R::Entry>> + 'a>> {
+        Ok(Box::new(self.stars.values().filter_map(move |e| {
+            let c = e.core();
+            if c.phot_g_mean_mag > mag_limit {
+                return None;
+            }
+            if !cone.contains_unit_vec(&c.unit_vector()) {
+                return None;
+            }
+            Some(Ok(e.clone()))
+        })))
+    }
+}
+
+impl<R: GaiaRelease> StarCatalog for MemoryResidentCatalog<R> {
     type Star = R::Entry;
 
     fn get_star(&self, id: usize) -> Option<&Self::Star> {
