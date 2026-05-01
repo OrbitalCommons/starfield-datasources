@@ -100,6 +100,12 @@ impl<R: GaiaRelease> LazyLoadingCatalog<R> {
 }
 
 impl<R: GaiaRelease> GaiaCatalog<R> for LazyLoadingCatalog<R> {
+    /// Total committed row count from the manifest. No I/O — the writer
+    /// keeps `kept_rows` in sync atomically on every commit.
+    fn len(&self) -> u64 {
+        self.dir.manifest.kept_rows
+    }
+
     fn entries_in_cone<'a>(
         &'a self,
         cone: Cone,

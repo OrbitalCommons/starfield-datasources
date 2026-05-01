@@ -38,6 +38,22 @@ pub trait GaiaCatalog<R: GaiaRelease> {
         mag_limit: f64,
     ) -> Result<Box<dyn Iterator<Item = Result<R::Entry>> + 'a>>;
 
+    /// Total row count this catalog can serve, regardless of cone or
+    /// magnitude. Lazy backends answer this from the on-disk manifest
+    /// without touching shard files.
+    ///
+    /// Returns `u64` (not `usize`) so the value is consistent across
+    /// 32- and 64-bit targets and matches the manifest's storage type;
+    /// callers that also have `StarCatalog` in scope must disambiguate
+    /// `cat.len()` via UFCS, e.g.
+    /// `<_ as GaiaCatalog<Dr3>>::len(&cat)`.
+    fn len(&self) -> u64;
+
+    /// True when [`len`](Self::len) is zero.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Drain the cone into a memory-resident catalog.
     fn materialize_cone(&self, cone: Cone, mag_limit: f64) -> Result<MemoryResidentCatalog<R>> {
         let mut catalog = MemoryResidentCatalog::with_mag_limit(mag_limit);
@@ -146,7 +162,16 @@ impl<R: GaiaRelease> GaiaCatalog<R> for MemoryResidentCatalog<R> {
             Some(Ok(e.clone()))
         })))
     }
+
+    fn len(&self) -> u64 {
+        self.stars.len() as u64
+    }
 }
+
+// `MemoryResidentCatalog` already implements `StarCatalog::len(&self) -> usize`;
+// `GaiaCatalog<R>::len(&self) -> u64` shadows the name. Inherent methods take
+// precedence and don't exist for `len`, so direct `cat.len()` is ambiguous when
+// both traits are in scope — callers disambiguate via UFCS, see the trait doc.
 
 impl<R: GaiaRelease> StarCatalog for MemoryResidentCatalog<R> {
     type Star = R::Entry;

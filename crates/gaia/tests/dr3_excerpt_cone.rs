@@ -300,7 +300,10 @@ fn cone_loader_errors_on_missing_dir() {
 /// the rows it produces. Used by the trait-level tests below.
 fn cone_count_via_trait(cat: &dyn GaiaCatalog<Dr3>, cone: Cone, mag_limit: f64) -> usize {
     let mut n = 0;
-    for row in cat.entries_in_cone(cone, mag_limit).expect("entries_in_cone") {
+    for row in cat
+        .entries_in_cone(cone, mag_limit)
+        .expect("entries_in_cone")
+    {
         let _ = row.expect("row");
         n += 1;
     }
@@ -400,6 +403,53 @@ fn materialize_cone_round_trips_through_lazy() {
     let ids: std::collections::HashSet<u64> =
         materialized.stars().map(|s| s.core.source_id).collect();
     assert_eq!(ids, inside_ids);
+}
+
+#[test]
+fn lazy_len_reads_from_manifest() {
+    // Build a fixture with 60 rows, ingest with the healpix sharder, then
+    // assert `LazyLoadingCatalog::len()` returns 60 from the manifest
+    // without us having to scan any shard files.
+    let (fixture, _ids) = fixture_with_cone(40, 20, 100.0, 25.0, 0.5);
+    let out = tempfile::tempdir().unwrap();
+    excerpt_csv_file::<Dr3, _, _>(
+        fixture.path(),
+        f64::INFINITY,
+        out.path(),
+        HealpixShard { level: 3 },
+        |_| true,
+    )
+    .unwrap();
+    let lazy = LazyLoadingCatalog::<Dr3>::open(out.path()).unwrap();
+    assert_eq!(<_ as GaiaCatalog<Dr3>>::len(&lazy), 60);
+    assert!(!<_ as GaiaCatalog<Dr3>>::is_empty(&lazy));
+}
+
+#[test]
+fn memory_resident_len_matches_hashmap_size() {
+    let (fixture, _ids) = fixture_with_cone(15, 35, 50.0, -15.0, 0.5);
+    let mem: MemoryResidentCatalog<Dr3> =
+        MemoryResidentCatalog::from_csv_file(fixture.path(), f64::INFINITY).unwrap();
+    assert_eq!(<_ as GaiaCatalog<Dr3>>::len(&mem), 50);
+}
+
+#[test]
+fn empty_lazy_dir_is_empty() {
+    // No input files committed → manifest.kept_rows == 0.
+    let out = tempfile::tempdir().unwrap();
+    // Initialize an empty manifest by opening + immediately finishing a writer.
+    use starfield_gaia::excerpt::ShardedCsvWriter;
+    let writer = ShardedCsvWriter::<Dr3, _>::new_or_resume(
+        out.path(),
+        HealpixShard { level: 3 },
+        f64::INFINITY,
+    )
+    .unwrap();
+    let _ = writer.finish().unwrap();
+
+    let lazy = LazyLoadingCatalog::<Dr3>::open(out.path()).unwrap();
+    assert_eq!(<_ as GaiaCatalog<Dr3>>::len(&lazy), 0);
+    assert!(<_ as GaiaCatalog<Dr3>>::is_empty(&lazy));
 }
 
 #[test]

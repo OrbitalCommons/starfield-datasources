@@ -100,6 +100,10 @@ impl GaiaCatalog<Dr2> for Dr2Catalog {
     ) -> Result<Box<dyn Iterator<Item = Result<Dr2Entry>> + 'a>> {
         self.0.entries_in_cone(cone, mag_limit)
     }
+
+    fn len(&self) -> u64 {
+        <_ as GaiaCatalog<Dr2>>::len(&self.0)
+    }
 }
 
 pub fn download_file(filename: &str) -> Result<PathBuf> {

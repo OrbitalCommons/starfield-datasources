@@ -114,6 +114,10 @@ impl GaiaCatalog<Dr3> for Dr3Catalog {
     ) -> Result<Box<dyn Iterator<Item = Result<Dr3Entry>> + 'a>> {
         self.0.entries_in_cone(cone, mag_limit)
     }
+
+    fn len(&self) -> u64 {
+        <_ as GaiaCatalog<Dr3>>::len(&self.0)
+    }
 }
 
 // -- Download conveniences --------------------------------------------------
