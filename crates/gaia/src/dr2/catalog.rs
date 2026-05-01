@@ -42,6 +42,27 @@ impl Dr2Catalog {
     pub fn merge(&mut self, other: Self) {
         self.0.merge(other.0);
     }
+
+    /// Insert the embedded Hipparcos-derived bright-star supplement into this
+    /// catalog. Returns the number of supplement entries actually added (rows
+    /// with `phot_g_mean_mag <= mag_limit`).
+    ///
+    /// See [`crate::dr2::supplement`] for the data provenance, the synthetic
+    /// `source_id` masking scheme, and the list of fields supplement entries
+    /// **don't** populate (no BP/RP, no RV, no astrophysical params, etc.).
+    pub fn augment_missing(&mut self, mag_limit: f64) -> Result<usize> {
+        let rows = crate::dr2::supplement::parse_embedded_supplement()?;
+        let mut added = 0;
+        for row in &rows {
+            if row.fitted_g_mag > mag_limit {
+                continue;
+            }
+            self.0
+                .insert(crate::dr2::supplement::supplement_row_to_entry(row));
+            added += 1;
+        }
+        Ok(added)
+    }
 }
 
 impl Default for Dr2Catalog {
