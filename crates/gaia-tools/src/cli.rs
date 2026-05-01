@@ -34,8 +34,19 @@ pub struct Cli {
     #[arg(long = "cache-raw", default_value_t = false)]
     pub cache_raw: bool,
 
-    /// Delete each `--input` file from disk after successful processing. Local
-    /// paths only; no-op on streamed CDN sources.
+    /// Concurrent CDN download workers used in `--cache-raw` mode. Workers
+    /// download in parallel into the per-release cache; the extract+commit
+    /// phase is single-threaded and consumes results as they arrive.
+    /// Streaming mode (`--cache-raw` not set) ignores this and runs serially.
+    #[arg(long = "download-workers", default_value_t = 10)]
+    pub download_workers: u32,
+
+    /// Delete each input file from disk once it has been successfully
+    /// extracted. Applies to both `--input` local paths AND `--from-release
+    /// --cache-raw` CDN-cached files (which makes that mode "stage to disk,
+    /// extract, evict" — bounded steady-state disk for the raw bytes).
+    /// No-op for `--from-release` without `--cache-raw` (streaming mode
+    /// never stages anything to disk in the first place).
     #[arg(long = "clean-after-excerpt", default_value_t = false)]
     pub clean_after_excerpt: bool,
 
@@ -97,15 +108,8 @@ pub enum ReleaseChoice {
     Dr3,
 }
 
-impl ReleaseChoice {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ReleaseChoice::Dr1 => "DR1",
-            ReleaseChoice::Dr2 => "DR2",
-            ReleaseChoice::Dr3 => "DR3",
-        }
-    }
-}
+// (Release-label conversion lives in main.rs as `release_label::<R>` so it
+// dispatches off the typed `R::RELEASE` rather than the CLI-side enum.)
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sharder {
