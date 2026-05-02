@@ -97,6 +97,44 @@ impl<R: GaiaRelease> LazyLoadingCatalog<R> {
     pub fn healpix_level(&self) -> u8 {
         self.healpix_level
     }
+
+    /// Number of HEALPix cells in this directory's layout
+    /// (`12 · 4^level`). Cell ids run `0..cell_count()`.
+    pub fn cell_count(&self) -> u32 {
+        self.dir.num_shards()
+    }
+
+    /// Stream every entry in HEALPix cell `cell_id` whose
+    /// `phot_g_mean_mag <= mag_limit`. Returns an empty iterator when
+    /// the cell received no rows during ingest (no shard file on
+    /// disk).
+    ///
+    /// Use this to drive a cell-at-a-time index builder: the caller
+    /// iterates `0..cell_count()`, processes one cell's worth of
+    /// entries at a time, and never has to materialize the whole
+    /// catalog. Combined with the manifest's per-cell row count
+    /// (`ExcerptDir::manifest.shard_rows[cell_id]`), the caller can
+    /// pre-allocate exact-size buffers per cell.
+    ///
+    /// `cell_id >= cell_count()` returns `Err`.
+    pub fn entries_in_cell<'a>(
+        &'a self,
+        cell_id: u32,
+        mag_limit: f64,
+    ) -> Result<Box<dyn Iterator<Item = Result<R::Entry>> + 'a>> {
+        if cell_id >= self.cell_count() {
+            return Err(StarfieldError::DataError(format!(
+                "entries_in_cell: cell_id {} out of range (cell_count={})",
+                cell_id,
+                self.cell_count()
+            )));
+        }
+        let Some(path) = self.dir.existing_shard_path(cell_id) else {
+            return Ok(Box::new(std::iter::empty()));
+        };
+        let reader = CsvSourceReader::<R>::open(&path, mag_limit)?;
+        Ok(Box::new(reader))
+    }
 }
 
 impl<R: GaiaRelease> GaiaCatalog<R> for LazyLoadingCatalog<R> {

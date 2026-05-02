@@ -484,3 +484,170 @@ fn lazy_open_validates_release() {
         msg
     );
 }
+
+// ====================================================================
+// Per-cell access: drives the cell-at-a-time iteration pattern needed
+// by downstream index builders (zodiacal#65). Empty cells return an
+// empty iterator (no I/O); out-of-range cell ids error.
+// ====================================================================
+
+#[test]
+fn entries_in_cell_returns_only_that_cell() {
+    // Build a fixture spread across the sky, ingest healpix-3 (768 cells),
+    // then iterate cells and check that the union of every cell's entries
+    // equals the whole catalog and no entry appears in more than one cell.
+    let (fixture, _ids) = fixture_with_cone(80, 120, 30.0, 10.0, 0.5);
+    let out = tempfile::tempdir().unwrap();
+    excerpt_csv_file::<Dr3, _, _>(
+        fixture.path(),
+        f64::INFINITY,
+        out.path(),
+        HealpixShard { level: 3 },
+        |_| true,
+    )
+    .unwrap();
+
+    let lazy = LazyLoadingCatalog::<Dr3>::open(out.path()).unwrap();
+    assert_eq!(lazy.cell_count(), 12 << (2 * 3)); // 768 for level-3
+
+    let mut union: std::collections::HashSet<u64> = std::collections::HashSet::new();
+    let mut total_via_cells = 0u64;
+    for cell in 0..lazy.cell_count() {
+        let cell_ids: Vec<u64> = lazy
+            .entries_in_cell(cell, f64::INFINITY)
+            .unwrap()
+            .map(|r| r.unwrap().core.source_id)
+            .collect();
+        for id in &cell_ids {
+            assert!(
+                union.insert(*id),
+                "id {} appeared in cell {} after already appearing in another cell",
+                id,
+                cell
+            );
+        }
+        total_via_cells += cell_ids.len() as u64;
+    }
+    // Every committed row should be accounted for exactly once.
+    assert_eq!(total_via_cells, <_ as GaiaCatalog<Dr3>>::len(&lazy));
+}
+
+#[test]
+fn entries_in_cell_empty_cell_yields_empty_iterator() {
+    // Single-row fixture forces all but one cell to be empty. Pick any
+    // cell other than the one we know got data and assert the iterator
+    // yields nothing.
+    let mut f = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();
+    writeln!(f, "{}", HEADER).unwrap();
+    write_row(&mut f, 1, 0.0, 0.0, 10.0); // (ra=0, dec=0) lands in some level-3 cell
+    f.flush().unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    excerpt_csv_file::<Dr3, _, _>(
+        f.path(),
+        f64::INFINITY,
+        out.path(),
+        HealpixShard { level: 3 },
+        |_| true,
+    )
+    .unwrap();
+
+    let lazy = LazyLoadingCatalog::<Dr3>::open(out.path()).unwrap();
+    // Find the cell that got the row, then walk every other cell and
+    // confirm an empty iterator.
+    let occupied: u32 = (0..lazy.cell_count())
+        .find(|&c| {
+            lazy.entries_in_cell(c, f64::INFINITY)
+                .unwrap()
+                .next()
+                .is_some()
+        })
+        .expect("at least one cell got the row");
+    let mut empty_cells_checked = 0;
+    for cell in 0..lazy.cell_count() {
+        if cell == occupied {
+            continue;
+        }
+        let any = lazy
+            .entries_in_cell(cell, f64::INFINITY)
+            .unwrap()
+            .next()
+            .is_some();
+        assert!(!any, "cell {} unexpectedly returned a row", cell);
+        empty_cells_checked += 1;
+    }
+    assert_eq!(empty_cells_checked, lazy.cell_count() - 1);
+}
+
+#[test]
+fn entries_in_cell_rejects_out_of_range_id() {
+    // Empty fixture, but a level-3 layout still has 768 cells.
+    let mut f = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();
+    writeln!(f, "{}", HEADER).unwrap();
+    write_row(&mut f, 1, 0.0, 0.0, 10.0);
+    f.flush().unwrap();
+    let out = tempfile::tempdir().unwrap();
+    excerpt_csv_file::<Dr3, _, _>(
+        f.path(),
+        f64::INFINITY,
+        out.path(),
+        HealpixShard { level: 3 },
+        |_| true,
+    )
+    .unwrap();
+
+    let lazy = LazyLoadingCatalog::<Dr3>::open(out.path()).unwrap();
+    let bad_id = lazy.cell_count(); // first invalid id
+                                    // `expect_err` would require `Debug` on the `Ok` variant — and
+                                    // `Box<dyn Iterator<...>>` doesn't impl `Debug` — so match instead.
+    match lazy.entries_in_cell(bad_id, f64::INFINITY) {
+        Ok(_) => panic!("out-of-range cell_id should error"),
+        Err(e) => assert!(
+            e.to_string().contains("out of range"),
+            "error should mention out of range, got: {}",
+            e
+        ),
+    };
+}
+
+#[test]
+fn entries_in_cell_honours_mag_limit() {
+    // Single cell with both bright and faint stars; mag_limit gates them.
+    let mut f = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();
+    writeln!(f, "{}", HEADER).unwrap();
+    for i in 0..10u64 {
+        write_row(&mut f, i, 100.0, 30.0, 8.0);
+    }
+    for i in 10..20u64 {
+        write_row(&mut f, i, 100.001, 30.001, 18.0);
+    }
+    f.flush().unwrap();
+
+    let out = tempfile::tempdir().unwrap();
+    excerpt_csv_file::<Dr3, _, _>(
+        f.path(),
+        f64::INFINITY,
+        out.path(),
+        HealpixShard { level: 3 },
+        |_| true,
+    )
+    .unwrap();
+
+    let lazy = LazyLoadingCatalog::<Dr3>::open(out.path()).unwrap();
+    // Find the cell holding our 20 stars (they're all within ~0.001° of
+    // each other so they'll land together).
+    let occupied = (0..lazy.cell_count())
+        .find(|&c| {
+            lazy.entries_in_cell(c, f64::INFINITY)
+                .unwrap()
+                .next()
+                .is_some()
+        })
+        .unwrap();
+    let n_bright = lazy
+        .entries_in_cell(occupied, 10.0)
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .count();
+    assert_eq!(n_bright, 10, "mag_limit=10 should drop the mag-18 cohort");
+}
