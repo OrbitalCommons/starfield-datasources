@@ -1,11 +1,17 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/jplephem",
+    "crates/bright-galaxies",
+    "crates/datasource-utils",
     "crates/horizons",
     "crates/sbdb",
     "crates/gaia",
+    "crates/gaia-extended",
+    "crates/gaia-tools",
     "crates/hipparcos",
+    "crates/mpc",
+    "crates/nsa",
+    "crates/rubin",
     "crates/starfield-datasources",
 ]
 
@@ -15,19 +21,21 @@ license = "MIT"
 repository = "https://github.com/OrbitalCommons/starfield-datasources"
 
 [workspace.dependencies]
-starfield = { git = "https://github.com/OrbitalCommons/starfield.git" }
+starfield = "0.12"
 reqwest = { version = "0.12", features = ["blocking", "json", "multipart"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
 base64 = "0.22.1"
 nalgebra = "0.32"
-byteorder = "1.5"
-memmap2 = "0.9"
-lazy_static = "1.4"
 log = "0.4"
 flate2 = "1.0"
 md5 = "0.7"
 regex = "1.10"
 rand = "0.8"
 indicatif = "0.17"
+arrow = "58"
+cdshealpix = "0.9.1"
+clap = { version = "4", features = ["derive"] }
+fitsio-pure = "0.11"
+plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "all_series"] }

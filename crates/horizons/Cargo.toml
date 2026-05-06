@@ -8,9 +8,9 @@ repository.workspace = true
 
 [dependencies]
 starfield = { workspace = true }
-starfield-jplephem = { path = "../jplephem" }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 base64 = { workspace = true }
+starfield-datasource-utils = { version = "0.1.0", path = "../datasource-utils" }
