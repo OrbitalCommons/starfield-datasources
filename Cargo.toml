@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/bright-galaxies",
     "crates/datasource-utils",
     "crates/horizons",
     "crates/sbdb",
