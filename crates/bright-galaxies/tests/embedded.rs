@@ -173,6 +173,62 @@ fn rejects_duplicate_names() {
 }
 
 #[test]
+fn extended_source_impl_round_trips_params() {
+    use starfield::catalogs::ExtendedSource;
+
+    let cat = BrightGalaxyCatalog::load_embedded().unwrap();
+    let m31 = cat.get("M31").unwrap();
+    let p = m31.sersic_profile().expect("M31 has Sersic params");
+
+    // Field-shape conversion: ours stores ellipticity (1 - b/a),
+    // upstream stores axis_ratio (b/a). Verify the flip.
+    let expected_axis_ratio = 1.0 - m31.ellipticity_sersic as f64;
+    assert!(
+        (p.axis_ratio - expected_axis_ratio).abs() < 1e-9,
+        "axis_ratio not flipped correctly: got {}, expected {}",
+        p.axis_ratio,
+        expected_axis_ratio
+    );
+    assert_eq!(p.theta_half_arcsec, m31.radius_sersic_arcsec as f64);
+    assert_eq!(p.n, m31.n_sersic as f64);
+    assert_eq!(p.position_angle_deg, m31.pa_sersic_deg as f64);
+}
+
+#[test]
+fn extended_source_surface_brightness_matches_sersic_formula() {
+    // `surface_brightness_at` returns I(r)/I_e where
+    // I(r) = I_e · exp[-b_n · ((r/θ_half)^(1/n) − 1)].
+    // At r = θ_half along the major axis, the value is exactly 1.0;
+    // at r = 0 (centre) it's exp(b_n), which for n=4 is ≈ 2140.
+    use starfield::catalogs::{ExtendedSource, SersicProfile};
+
+    let cat = BrightGalaxyCatalog::load_embedded().unwrap();
+    let m87 = cat.get("M87").unwrap(); // n_sersic = 4 → de Vaucouleurs
+    let p = m87.sersic_profile().unwrap();
+    let sb_centre = p.surface_brightness_at(0.0, 0.0);
+    assert!(
+        sb_centre > 100.0,
+        "centre should be exp(b_n) >> 1 for de Vaucouleurs, got {}",
+        sb_centre
+    );
+
+    // Cleaner check: an axis-aligned, circular, n=4 profile evaluated
+    // at the half-light radius should give exactly 1.0.
+    let p0 = SersicProfile {
+        theta_half_arcsec: 10.0,
+        n: 4.0,
+        axis_ratio: 1.0,
+        position_angle_deg: 0.0,
+    };
+    let sb_at_re = p0.surface_brightness_at(0.0, 10.0);
+    assert!(
+        (sb_at_re - 1.0).abs() < 1e-9,
+        "I(R_e) / I_e should be 1.0, got {}",
+        sb_at_re
+    );
+}
+
+#[test]
 fn comment_and_blank_lines_skipped() {
     let mut f = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();
     writeln!(

@@ -118,6 +118,42 @@ fn empty_file_after_header_yields_empty_catalog() {
 }
 
 #[test]
+fn extended_source_returns_some_when_all_sersic_fields_present() {
+    use starfield::catalogs::ExtendedSource;
+
+    let fixture = write_galaxy_fixture(&[(1001, 10.0, 20.0, Some(2.5), Some(4.0))]);
+    let cat = Dr3GalaxyCatalog::from_csv_file(fixture.path()).unwrap();
+    let g = cat.get(1001).unwrap();
+    let p = g.sersic_profile().expect("all four shape fields populated");
+    assert_eq!(p.theta_half_arcsec, 2.5);
+    assert_eq!(p.n, 4.0);
+    // Fixture writes ellipticity_sersic = 0.3 and pa_sersic = 42.0.
+    assert!(
+        (p.axis_ratio - 0.7).abs() < 1e-6,
+        "axis_ratio should be 1 - 0.3, got {}",
+        p.axis_ratio
+    );
+    assert_eq!(p.position_angle_deg, 42.0);
+}
+
+#[test]
+fn extended_source_returns_none_when_any_sersic_field_missing() {
+    use starfield::catalogs::ExtendedSource;
+
+    // The fixture writer leaves radius_sersic and n_sersic empty when
+    // the option is None, but still emits ellipticity (0.3) and PA (42)
+    // unconditionally. The impl must require all four — entry 1003
+    // returns None because radius and n are blank.
+    let fixture = write_galaxy_fixture(&[(1003, 12.0, 22.0, None, None)]);
+    let cat = Dr3GalaxyCatalog::from_csv_file(fixture.path()).unwrap();
+    let g = cat.get(1003).unwrap();
+    assert!(
+        g.sersic_profile().is_none(),
+        "missing radius/n should mean no sersic_profile"
+    );
+}
+
+#[test]
 fn duplicate_source_id_collides() {
     // Same source_id twice → second wins (HashMap insert semantics).
     let mut f = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();

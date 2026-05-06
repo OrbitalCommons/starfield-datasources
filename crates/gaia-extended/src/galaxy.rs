@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use starfield::catalogs::{ExtendedSource, SersicProfile};
 use starfield::{Result, StarfieldError};
 
 use crate::parse::{
@@ -65,6 +66,28 @@ pub struct Dr3GalaxyCandidate {
     pub vari_best_class_name: Option<String>,
     /// Score for the best variability class (0..=1).
     pub vari_best_class_score: Option<f32>,
+}
+
+impl ExtendedSource for Dr3GalaxyCandidate {
+    /// Returns `Some(SersicProfile)` only when the four shape fields
+    /// (`radius_sersic`, `n_sersic`, `ellipticity_sersic`, `pa_sersic`)
+    /// are all populated. The DR3 morphology pipeline can fail per
+    /// source — rows with any field missing are unfit and a renderer
+    /// should fall back to a point source.
+    fn sersic_profile(&self) -> Option<SersicProfile> {
+        let radius = self.radius_sersic?;
+        let n = self.n_sersic?;
+        let ellipticity = self.ellipticity_sersic?;
+        let pa = self.pa_sersic?;
+        // Convert our (e = 1 - b/a) to upstream's `axis_ratio` (b/a).
+        let axis_ratio = (1.0 - ellipticity as f64).clamp(0.0, 1.0);
+        Some(SersicProfile {
+            theta_half_arcsec: radius as f64,
+            n: n as f64,
+            axis_ratio,
+            position_angle_deg: pa as f64,
+        })
+    }
 }
 
 /// In-memory catalog of [`Dr3GalaxyCandidate`] keyed by `source_id`.
