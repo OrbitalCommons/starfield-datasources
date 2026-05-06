@@ -5,6 +5,7 @@ members = [
     "crates/horizons",
     "crates/sbdb",
     "crates/gaia",
+    "crates/gaia-extended",
     "crates/gaia-tools",
     "crates/hipparcos",
     "crates/mpc",
