@@ -51,6 +51,7 @@ use std::fs;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use starfield::catalogs::{ExtendedSource, SersicProfile};
 use starfield::{Result, StarfieldError};
 
 use starfield_gaia::Cone;
@@ -83,6 +84,19 @@ pub struct BrightGalaxy {
     pub pa_sersic_deg: f32,
     /// Free-form provenance / approximation notes.
     pub notes: String,
+}
+
+impl ExtendedSource for BrightGalaxy {
+    fn sersic_profile(&self) -> Option<SersicProfile> {
+        // Convert our (e = 1 - b/a) to upstream's `axis_ratio` (b/a).
+        let axis_ratio = 1.0 - self.ellipticity_sersic as f64;
+        Some(SersicProfile {
+            theta_half_arcsec: self.radius_sersic_arcsec as f64,
+            n: self.n_sersic as f64,
+            axis_ratio,
+            position_angle_deg: self.pa_sersic_deg as f64,
+        })
+    }
 }
 
 /// In-memory catalog of [`BrightGalaxy`] keyed by `name`.
