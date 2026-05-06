@@ -9,6 +9,7 @@
 //! - `sbdb` — NASA JPL Small-Body Database API client
 //! - `gaia` — ESA Gaia DR3 loader (default)
 //! - `gaia-all` — adds DR1 and DR2 alongside DR3
+//! - `gaia-extended` — DR3 galaxy_candidates + qso_candidates loaders
 //! - `hipparcos` — Hipparcos star catalog loader
 //! - `mpc` — Minor Planet Center client (MPCORB, observatory codes, observations)
 //! - `nsa` — NASA-Sloan Atlas (NSA) galaxy catalog loader
@@ -22,6 +23,9 @@ pub use starfield_sbdb as sbdb;
 
 #[cfg(feature = "gaia")]
 pub use starfield_gaia as gaia;
+
+#[cfg(feature = "gaia-extended")]
+pub use starfield_gaia_extended as gaia_extended;
 
 #[cfg(feature = "hipparcos")]
 pub use starfield_hipparcos as hipparcos;
