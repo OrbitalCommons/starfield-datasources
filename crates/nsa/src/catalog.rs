@@ -11,7 +11,7 @@ use std::path::Path;
 
 use nalgebra as na;
 use serde::{Deserialize, Serialize};
-use starfield::catalogs::{IsophoteSample, StarCatalog, StarData};
+use starfield::catalogs::{ExtendedSource, IsophoteSample, SersicProfile, StarCatalog, StarData};
 use starfield::{Result, StarfieldError};
 
 use fitsio_pure::bintable::{
@@ -274,6 +274,29 @@ impl NsaEntry {
             return None;
         }
         Some(22.5 - 2.5 * (f as f64).log10())
+    }
+}
+
+impl ExtendedSource for NsaEntry {
+    /// NSA's r-band Sersic fit. NSA only includes galaxies with a
+    /// successful Sersic fit, so this always returns `Some`. Returns
+    /// `None` only when the stored axis ratio is non-positive (defensive
+    /// against pathological rows that may slip past the upstream cuts).
+    ///
+    /// Field mapping: `sersic_th50` → `theta_half_arcsec`, `sersic_n` →
+    /// `n`, `sersic_ba` → `axis_ratio` (NSA already stores b/a — no flip
+    /// required, unlike `Dr3GalaxyCandidate` and `BrightGalaxy` which
+    /// store `ellipticity = 1 - b/a`), `sersic_phi` → `position_angle_deg`.
+    fn sersic_profile(&self) -> Option<SersicProfile> {
+        if self.sersic_ba <= 0.0 || self.sersic_th50 <= 0.0 || self.sersic_n <= 0.0 {
+            return None;
+        }
+        Some(SersicProfile {
+            theta_half_arcsec: self.sersic_th50 as f64,
+            n: self.sersic_n as f64,
+            axis_ratio: self.sersic_ba as f64,
+            position_angle_deg: self.sersic_phi as f64,
+        })
     }
 }
 
