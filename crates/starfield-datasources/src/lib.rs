@@ -12,6 +12,7 @@
 //! - `gaia-extended` — DR3 galaxy_candidates + qso_candidates loaders
 //! - `bright-galaxies` — hand-curated supplement of nearby bright galaxies (M31, LMC, Virgo, etc.)
 //! - `hipparcos` — Hipparcos star catalog loader
+//! - `mast` — MAST (Mikulski Archive for Space Telescopes): HST observations, data products, FITS downloads, WCS
 //! - `mpc` — Minor Planet Center client (MPCORB, observatory codes, observations)
 //! - `nsa` — NASA-Sloan Atlas (NSA) galaxy catalog loader
 //! - `rubin` — Vera C. Rubin Observatory LSST alert broker clients
@@ -33,6 +34,9 @@ pub use starfield_bright_galaxies as bright_galaxies;
 
 #[cfg(feature = "hipparcos")]
 pub use starfield_hipparcos as hipparcos;
+
+#[cfg(feature = "mast")]
+pub use starfield_mast as mast;
 
 #[cfg(feature = "mpc")]
 pub use starfield_mpc as mpc;

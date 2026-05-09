@@ -9,6 +9,7 @@ members = [
     "crates/gaia-extended",
     "crates/gaia-tools",
     "crates/hipparcos",
+    "crates/mast",
     "crates/mpc",
     "crates/nsa",
     "crates/rubin",
