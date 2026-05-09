@@ -1,6 +1,6 @@
 [package]
 name = "starfield-datasources"
-version = "0.8.0"
+version = "0.9.0"
 description = "Astronomical data source clients for the starfield ecosystem"
 edition.workspace = true
 license.workspace = true
@@ -15,6 +15,7 @@ gaia-all = ["gaia", "starfield-gaia/all-releases"]
 gaia-extended = ["gaia", "dep:starfield-gaia-extended"]
 bright-galaxies = ["gaia", "dep:starfield-bright-galaxies"]
 hipparcos = ["dep:starfield-hipparcos"]
+mast = ["dep:starfield-mast"]
 mpc = ["dep:starfield-mpc"]
 nsa = ["dep:starfield-nsa"]
 rubin = ["dep:starfield-rubin"]
@@ -26,6 +27,7 @@ starfield-gaia = { path = "../gaia", optional = true }
 starfield-gaia-extended = { path = "../gaia-extended", optional = true }
 starfield-bright-galaxies = { path = "../bright-galaxies", optional = true }
 starfield-hipparcos = { path = "../hipparcos", optional = true }
+starfield-mast = { path = "../mast", optional = true }
 starfield-mpc = { path = "../mpc", optional = true }
 starfield-nsa = { path = "../nsa", optional = true }
 starfield-rubin = { path = "../rubin", optional = true }
