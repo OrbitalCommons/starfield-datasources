@@ -2,6 +2,7 @@
 
 use nalgebra as na;
 use serde::{Deserialize, Serialize};
+use starfield::ProperMotion;
 
 /// The variability flag reported by Gaia photometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -87,5 +88,17 @@ impl GaiaCore {
             let dist_pc = 1000.0 / plx;
             self.unit_vector() * dist_pc
         })
+    }
+
+    /// Typed proper motion in the Gaia DR3 convention (`pmra` carries
+    /// the cos(dec) factor; both fields mas/yr). Returns `Some` only
+    /// when both `pmra` and `pmdec` are populated — Gaia rows where
+    /// the astrometric fit didn't produce a PM solution have either
+    /// or both null and should fall back to the catalog's `ref_epoch`
+    /// position.
+    pub fn proper_motion(&self) -> Option<ProperMotion> {
+        let pmra = self.pmra?;
+        let pmdec = self.pmdec?;
+        Some(ProperMotion::new(pmra, pmdec))
     }
 }
