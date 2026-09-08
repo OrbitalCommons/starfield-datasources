@@ -10,6 +10,9 @@
 - Workspace with datasource crates under `crates/`
 - Facade crate at `crates/starfield-datasources/` re-exports all datasource crates behind feature flags
 - Default branch is `meawoppl/initial-workspace`
+- Local `main` and `meawoppl/initial-workspace` refs go stale — always `git fetch` and branch off
+  `origin/meawoppl/initial-workspace`, not the local ref, or you will rebuild work that already merged
+- `Cargo.lock` is not tracked
 
 ## Patterns
 
