@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.10.0 — Planetary spectral albedos
+
+### starfield-planet-spectra 0.1.0 (new)
+
+First crate of the resolved-planetary-appearance effort described in
+`docs/planetary-textures-plan.md`. Ships the spectral geometric albedos a
+focal-plane renderer needs to give a resolved planet the right colour.
+
+- Karkoschka (1994, 1998) full-disk albedo spectra from PDS Atmospheres volume
+  `gbat_0001` (`ESO-J/S/N/U-SPECTROPHOTOMETER-4-V2.0`, DOI `10.17189/2bp8-k793`)
+- `1995low.tab` embedded verbatim — 300–1050 nm at 0.4 nm sampling, spanning the
+  whole silicon detector response, for Jupiter, Saturn, Uranus, Neptune and Titan
+- `KarkoschkaTable::download` fetches the 0.1 nm-sampled `1995high` and the 1993
+  reduction into the starfield cache
+- `SpectralAlbedo` with linear interpolation and exact piecewise-linear band means;
+  refuses to extrapolate or to average a partially covered band
+- `AlbedoKind` distinguishes geometric albedo from full-disk albedo at non-zero
+  phase — the archive tabulates Jupiter at 6.8° and Saturn at 5.7°, and conflating
+  the two misstates the brightness of the two most prominent targets
+- `SpectralBody` is keyed on NAIF id so moons (Titan, 606) are representable
+- Methane absorption coefficients exposed alongside the albedos
+- Regression tests assert the 727/887 nm methane band structure and the blue/red
+  slopes of the ice giants and Titan, not just the table shape
+
+### Facade crate
+
+- New `planet-spectra` feature (not default)
+
 ## 0.5.0 — Gaia DR1/DR2/DR3 multi-release support
 
 ### starfield-gaia 0.1.0 → 0.2.0 (breaking)
