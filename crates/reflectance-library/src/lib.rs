@@ -87,11 +87,19 @@ pub enum Endmember {
     FreshBasalt,
     /// Weathered basalt.
     WeatheredBasalt,
+    /// Old black asphalt road — the dark half of an urban surface.
+    Asphalt,
+    /// Light grey concrete road — the bright half of an urban surface.
+    ///
+    /// Urban land cover is strongly bimodal in brightness, so asphalt and
+    /// concrete are separate endmembers rather than one "urban" average that
+    /// would represent neither.
+    Concrete,
 }
 
 impl Endmember {
     /// Every endmember in the library.
-    pub const ALL: [Endmember; 9] = [
+    pub const ALL: [Endmember; 11] = [
         Endmember::OpenOcean,
         Endmember::CoastalWater,
         Endmember::GreenVegetation,
@@ -101,6 +109,8 @@ impl Endmember {
         Endmember::WaterIce,
         Endmember::FreshBasalt,
         Endmember::WeatheredBasalt,
+        Endmember::Asphalt,
+        Endmember::Concrete,
     ];
 
     /// The identifier used in the embedded table and on the wire.
@@ -115,6 +125,8 @@ impl Endmember {
             Endmember::WaterIce => "WaterIce",
             Endmember::FreshBasalt => "FreshBasalt",
             Endmember::WeatheredBasalt => "WeatheredBasalt",
+            Endmember::Asphalt => "Asphalt",
+            Endmember::Concrete => "Concrete",
         }
     }
 
@@ -414,6 +426,25 @@ mod tests {
             );
         }
         assert!(ocean.at_nm(450.0).unwrap() > ocean.at_nm(650.0).unwrap());
+    }
+
+    #[test]
+    fn urban_endmembers_bracket_a_real_city_in_brightness() {
+        // Urban cover is bimodal: asphalt is among the darkest natural or
+        // artificial surfaces, concrete among the brighter. Averaging them into
+        // one "urban" endmember would represent neither, which is why they are
+        // separate.
+        let l = library();
+        let asphalt = l.get(Endmember::Asphalt).unwrap().at_nm(600.0).unwrap();
+        let concrete = l.get(Endmember::Concrete).unwrap().at_nm(600.0).unwrap();
+        assert!(asphalt < 0.15, "asphalt reflectance {asphalt}");
+        assert!(concrete > 2.0 * asphalt, "{concrete} vs {asphalt}");
+        // Both are spectrally flatter than vegetation: no red edge.
+        for e in [Endmember::Asphalt, Endmember::Concrete] {
+            let r = l.get(e).unwrap();
+            let edge = r.at_nm(750.0).unwrap() / r.at_nm(680.0).unwrap();
+            assert!(edge < 1.5, "{} has a red edge: {edge}", e.id());
+        }
     }
 
     #[test]
