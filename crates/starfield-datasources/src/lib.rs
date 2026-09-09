@@ -15,6 +15,8 @@
 //! - `mast` — MAST (Mikulski Archive for Space Telescopes): HST observations, data products, FITS downloads, WCS
 //! - `mpc` — Minor Planet Center client (MPCORB, observatory codes, observations)
 //! - `nsa` — NASA-Sloan Atlas (NSA) galaxy catalog loader
+//! - `planet-spectra` — spectral geometric albedos of the giant planets and Titan (Karkoschka / PDS)
+//! - `solar-spectrum` — TSIS-1 HSRS v2 solar reference spectrum at 1 nm
 //! - `rubin` — Vera C. Rubin Observatory LSST alert broker clients
 
 #[cfg(feature = "horizons")]
@@ -43,6 +45,12 @@ pub use starfield_mpc as mpc;
 
 #[cfg(feature = "nsa")]
 pub use starfield_nsa as nsa;
+
+#[cfg(feature = "planet-spectra")]
+pub use starfield_planet_spectra as planet_spectra;
+
+#[cfg(feature = "solar-spectrum")]
+pub use starfield_solar_spectrum as solar_spectrum;
 
 #[cfg(feature = "rubin")]
 pub use starfield_rubin as rubin;

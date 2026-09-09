@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.11.0 — Solar reference spectrum
+
+### starfield-solar-spectrum 0.1.0 (new)
+
+focalplane D1.1. The illumination half of resolved-body rendering: a reflectance
+is dimensionless and becomes photons only once multiplied by the solar spectrum.
+
+- TSIS-1 Hybrid Solar Reference Spectrum v2 (Coddington et al. 2023,
+  doi:10.1029/2022EA002637), the recognised international reference standard
+- Embedded at 1 nm box means over the full archive range, 202–2730 nm (2528 bins,
+  86 KB), with per-bin archive uncertainty
+- `scripts/build_table.py` regenerates it from LASP LISIRD, streaming the native
+  0.001–0.01 nm product in chunks and reducing as it goes
+- Resampled from the **native** product, not LISIRD's pre-smoothed 0.1 nm sibling:
+  averaging the smoothed product differs from the true box mean by up to 1.1%
+  across strong Fraunhofer lines, larger than the archive's own 0.3% uncertainty
+- `at_nm` returns the containing bin rather than interpolating, because
+  interpolating between box means of a line-blanketed spectrum implies a
+  resolution the data does not have
+- `irradiance_over` / `mean_over` / `weighted_irradiance` weight partial end bins
+  proportionally; `weighted_irradiance` takes a filter or QE response
+- `scale_factor_at_au` keeps the 1/r² conversion visible at call sites
+- Integrating the table recovers 1325.8 W m⁻² — 97.4% of the solar constant,
+  matching the archive's stated coverage, and asserted in the tests
+
+### Facade crate
+
+- New `solar-spectrum` feature (not default)
+
+## 0.10.0 — Planetary spectral albedos
+
+### starfield-planet-spectra 0.1.0 (new)
+
+First crate of the resolved-planetary-appearance effort described in
+`docs/planetary-textures-plan.md`. Ships the spectral geometric albedos a
+focal-plane renderer needs to give a resolved planet the right colour.
+
+- Karkoschka (1994, 1998) full-disk albedo spectra from PDS Atmospheres volume
+  `gbat_0001` (`ESO-J/S/N/U-SPECTROPHOTOMETER-4-V2.0`, DOI `10.17189/2bp8-k793`)
+- `1995low.tab` embedded verbatim — 300–1050 nm at 0.4 nm sampling, spanning the
+  whole silicon detector response, for Jupiter, Saturn, Uranus, Neptune and Titan
+- `KarkoschkaTable::download` fetches the 0.1 nm-sampled `1995high` and the 1993
+  reduction into the starfield cache
+- `SpectralAlbedo` with linear interpolation and exact piecewise-linear band means;
+  refuses to extrapolate or to average a partially covered band
+- `AlbedoKind` distinguishes geometric albedo from full-disk albedo at non-zero
+  phase — the archive tabulates Jupiter at 6.8° and Saturn at 5.7°, and conflating
+  the two misstates the brightness of the two most prominent targets
+- `SpectralBody` is keyed on NAIF id so moons (Titan, 606) are representable
+- Methane absorption coefficients exposed alongside the albedos
+- Regression tests assert the 727/887 nm methane band structure and the blue/red
+  slopes of the ice giants and Titan, not just the table shape
+
+### Facade crate
+
+- New `planet-spectra` feature (not default)
+
 ## 0.5.0 — Gaia DR1/DR2/DR3 multi-release support
 
 ### starfield-gaia 0.1.0 → 0.2.0 (breaking)
