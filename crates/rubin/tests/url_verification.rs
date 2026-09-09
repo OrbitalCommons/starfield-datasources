@@ -61,13 +61,13 @@ fn check_all<'a>(urls: impl IntoIterator<Item = (&'a str, &'a str)>, kind: &str)
 }
 
 #[test]
-#[ignore]
+#[ignore = "live upstream; bypasses the mirror. Detects archive rot, so it must not be re-pointed at the datastore"]
 fn test_all_broker_api_urls_reachable() {
     check_all(all_broker_api_urls(), "API");
 }
 
 #[test]
-#[ignore]
+#[ignore = "live upstream; bypasses the mirror. Detects archive rot, so it must not be re-pointed at the datastore"]
 fn test_all_broker_doc_urls_reachable() {
     check_all(all_broker_doc_urls(), "docs");
 }
