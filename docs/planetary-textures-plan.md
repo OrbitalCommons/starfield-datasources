@@ -24,6 +24,20 @@ different archives, at different sizes, with different update cadences:
 A renderer needs all three. Spectral albedo alone gives a flat disk of the right
 colour; a map alone gives structure with no colour and the wrong limb darkening.
 
+### Reconciliation with focalplane's plan
+
+`focalplane`'s `docs/solar-system-plan.md` (branch `fp-planets`) lists Phase 1
+items D1.1–D1.4 against this repo. They are the same effort under different
+names, with one real disagreement resolved in their favour:
+
+| focalplane | here | Status |
+|---|---|---|
+| D1.1 `starfield-solar-spectrum` (TSIS-1 HSRS v2, 1 nm) | *was absent* | **Adopted.** §2.3 originally pushed the solar spectrum to focalplane as radiometry. That was wrong: it is a tabulated archive product with provenance, which is what this repo is for. Next crate. |
+| D1.2 `starfield-reflectance-library` | §3.4 terrain-unit endmembers | Same concept; their split into a standalone crate is better than folding it into the map work. |
+| D1.3 `starfield-planet-maps` | PR 5 | Same crate. |
+| D1.4 SHA-256 helper in `datasource-utils` | *was absent* | Adopted; lands with PR 5, which is what needs it. |
+| *(not on their list)* | `starfield-planet-spectra` | Their D1.2 endmember list is entirely rocky/Earth surfaces, but their F3.7 renders the gas giants. Karkoschka fills that gap. |
+
 ## 1. What exists today
 
 Checked against the working trees, not from memory:
@@ -32,7 +46,9 @@ Checked against the working trees, not from memory:
 |---|---|---|
 | `starfield::planetlib::Body` | 11 bodies (8 planets, Sun, Moon, Pluto); `name()`, `naif_id()`, `radii_km()`, `flattening()`, `rotational_elements()` | **No moons besides Luna.** This plan needs its own body identifier keyed on NAIF id. |
 | `starfield::planetarylib` | starfield 0.15: `text_pck`, `iau2015.csv`, `RotationalElements`, `IauFrame`, `PckFrame` | Body-fixed rotation is done. Map registration has something to register *to*. |
-| `starfield::planetarylib::geometry` | **not landed** — no `sub_observer_point`, `apparent_ellipse` or `angular_semi_diameter` anywhere in the tree | Hard blocker for *sampling* a map: without a sub-observer point there is no way to know which part of the map faces the observer. This repo must not block on it, but PR 5 cannot be demonstrated end-to-end until it lands. |
+| `Position::angular_semi_diameter`, `Position::apparent_ellipse` | landed on starfield `main` at `93608df` (#182), in `src/positions/angular_size.rs` — **after** the 0.15.0 tag, so absent from a 0.15 checkout | Verified against `origin/main`. Grep the tag and you will wrongly conclude this is missing. |
+| `planetarylib::occult` | landed on `main` (#182) | `Occultation::{None, Partial, Full}`. |
+| `Position::sub_observer_point` / `sub_solar_point` | landing on `main` today (#187), `src/planetarylib/subpoint.rs` | The map-sampling entry point. Was the hard blocker for PR 5; no longer is. |
 | `focalplane::photometry::Spectrum` | trait: `spectral_irradiance(Wavelength) -> f64` (erg s⁻¹ cm⁻² Hz⁻¹), `irradiance(&Band)` | An albedo is *not* a spectrum — it is dimensionless. See §2.3. |
 | `focalplane` deps | pulls `starfield-gaia`, `starfield-nsa`, `starfield-datasource-utils` by git rev | Dependency runs focalplane → datasources. **Nothing here may depend on focalplane.** |
 | `starfield-datasource-utils` | `cache_dir`, `ensure_cache_subdir`, `download_to_file`, `build_http_client` | Reuse for every downloading crate here. |
