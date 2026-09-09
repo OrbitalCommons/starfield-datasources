@@ -58,6 +58,17 @@ const EMBEDDED_CSV: &str = include_str!("../data/tsis1_hsrs_v2_1nm.csv");
 /// Width of every bin, in nanometres.
 pub const BIN_WIDTH_NM: f64 = 1.0;
 
+/// Converts *F_λ* in W m⁻² nm⁻¹ to *F_ν* in erg s⁻¹ cm⁻² Hz⁻¹, given `λ²` in nm².
+///
+/// From `F_ν = F_λ · λ²/c` with the CGS unit change folded in:
+///
+/// ```text
+/// W m^-2 nm^-1  =  1e7 erg/s · 1e-4 cm^-2 · 1e7 cm^-1  =  1e10 erg s^-1 cm^-2 cm^-1
+/// λ_cm = λ_nm · 1e-7,  so λ_cm² = λ_nm² · 1e-14
+/// factor = 1e10 · 1e-14 / c_cgs = 1e-4 / 2.99792458e10
+/// ```
+pub const F_LAMBDA_W_M2_NM_TO_F_NU_CGS: f64 = 1e-4 / 2.997_924_58e10;
+
 /// One 1 nm bin of the reference spectrum.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Bin {
@@ -184,6 +195,22 @@ impl SolarSpectrum {
     /// Archive uncertainty at `nm`, W m⁻² nm⁻¹ at 1 AU.
     pub fn uncertainty_at_nm(&self, nm: f64) -> Option<f64> {
         self.bin_at(nm).map(|b| b.uncertainty)
+    }
+
+    /// Spectral irradiance at `nm` as *F_ν* in CGS, erg s⁻¹ cm⁻² Hz⁻¹ at 1 AU.
+    ///
+    /// The archive tabulates *F_λ*; astronomical photometry conventionally works
+    /// in *F_ν*. The conversion is `F_ν = F_λ · λ²/c` plus the CGS unit change,
+    /// folded into [`F_LAMBDA_W_M2_NM_TO_F_NU_CGS`].
+    ///
+    /// This is a unit change, not radiometry: no distance, geometry or solar
+    /// model enters. It lives here so the factor is written down once, in the
+    /// crate that owns the units, rather than being re-derived by each consumer.
+    /// Like [`SolarSpectrum::at_nm`], it returns the containing bin's box mean
+    /// and does not interpolate.
+    pub fn f_nu_cgs_at_nm(&self, nm: f64) -> Option<f64> {
+        self.at_nm(nm)
+            .map(|f_lambda| f_lambda * nm * nm * F_LAMBDA_W_M2_NM_TO_F_NU_CGS)
     }
 
     /// Irradiance integrated over `[lo_nm, hi_nm)`, W m⁻² at 1 AU.
@@ -401,6 +428,47 @@ mod tests {
             let ratio = s.uncertainty_at_nm(nm).unwrap() / s.at_nm(nm).unwrap();
             assert!(ratio < 0.02, "{nm} nm: uncertainty ratio {ratio}");
         }
+    }
+
+    #[test]
+    fn f_nu_conversion_reproduces_the_solar_ab_magnitude() {
+        // The strongest available check that the F_lambda -> F_nu unit change is
+        // right: turn it into an AB magnitude and compare with the known solar
+        // value. AB = -2.5 log10(F_nu) - 48.60, F_nu in erg s^-1 cm^-2 Hz^-1.
+        // The Sun is V = -26.75, and its AB magnitude near V is about -26.7.
+        let s = sun();
+        let f_nu = s.f_nu_cgs_at_nm(550.0).unwrap();
+        let ab = -2.5 * f_nu.log10() - 48.60;
+        assert!(
+            (-26.9..=-26.5).contains(&ab),
+            "solar AB magnitude at 550 nm came out {ab}, expected about -26.7"
+        );
+    }
+
+    #[test]
+    fn f_nu_conversion_matches_a_hand_computed_value() {
+        let s = sun();
+        let f_lambda = s.at_nm(500.0).unwrap();
+        // F_nu = F_lambda * 1e10 (to CGS per cm) * (500e-7 cm)^2 / c_cgs
+        let expected = f_lambda * 1e10 * (500e-7f64).powi(2) / 2.997_924_58e10;
+        let got = s.f_nu_cgs_at_nm(500.0).unwrap();
+        assert!(
+            (got - expected).abs() < 1e-18,
+            "{got} vs hand-computed {expected}"
+        );
+    }
+
+    #[test]
+    fn f_nu_respects_the_same_range_and_bin_discipline() {
+        let s = sun();
+        assert_eq!(s.f_nu_cgs_at_nm(201.9), None);
+        assert_eq!(s.f_nu_cgs_at_nm(2730.0), None);
+        assert_eq!(s.f_nu_cgs_at_nm(f64::NAN), None);
+        // Within a bin the F_lambda value is constant, so F_nu varies only
+        // through the explicit lambda^2 factor.
+        let a = s.f_nu_cgs_at_nm(500.0).unwrap();
+        let b = s.f_nu_cgs_at_nm(500.5).unwrap();
+        assert!(b > a);
     }
 
     #[test]
