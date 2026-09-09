@@ -366,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "live upstream; bypasses the mirror. Detects archive rot, so it must not be re-pointed at the datastore"]
+    #[ignore = "live upstream; must bypass the mirror and cache. Detects archive rot, so a warm or mirrored resolve would defeat it"]
     fn pinned_urls_are_reachable() {
         for p in PRODUCTS {
             let client = starfield_datasource_utils::build_http_client(60).unwrap();

@@ -34,6 +34,13 @@ pub const PDS_DATA_BASE_URL: &str = "https://pds-atmospheres.nmsu.edu/PDS/data/g
 /// upstream changes a [`Source`] and not the cache layout or anyone's pin.
 const KEY_PREFIX: &str = "pds/gbat_0001";
 
+/// Where this crate cached products before the datastore seam.
+///
+/// Kept so an existing cache is adopted rather than orphaned — a user who
+/// already has these files should not re-download them because the storage
+/// layout changed underneath them.
+const LEGACY_CACHE_SUBDIR: &str = "karkoschka";
+
 /// Phase angle of the Jupiter column in the 1995 tables, per the PDS label.
 const JUPITER_PHASE_DEG: f64 = 6.8;
 /// Phase angle of the Saturn column in the 1995 tables, per the PDS label.
@@ -166,9 +173,40 @@ impl KarkoschkaTable {
     }
 
     /// As [`KarkoschkaTable::download`], against a caller-configured store.
+    ///
+    /// Adopts a pre-seam cached copy if one exists — see
+    /// [`KarkoschkaTable::adopt_legacy_cache`].
     pub fn download_with(store: &Datastore, product: Product) -> Result<Self> {
-        let path = store.get(&product.artifact()).map_err(to_starfield)?;
+        let artifact = product.artifact();
+        Self::adopt_legacy_cache(store, product, &artifact);
+        let path = store.get(&artifact).map_err(to_starfield)?;
         Self::from_file(product, path)
+    }
+
+    /// Import a pre-seam cached file into the store, if one is present and the
+    /// store does not already hold the artifact.
+    ///
+    /// Before the datastore seam this crate cached products at
+    /// `~/.cache/starfield/karkoschka/<file>`. Without this, the first call
+    /// after upgrading would re-fetch a file the user already has — and for a
+    /// consumer that is offline, or whose upstream has since died, it would fail
+    /// outright despite the data sitting on disk.
+    ///
+    /// Import runs the artifact's content check, so a truncated or corrupt
+    /// legacy file is rejected rather than adopted. Failure is deliberately
+    /// silent: a missing or unusable legacy file is not an error, it just means
+    /// there is nothing to adopt and the normal resolution chain proceeds.
+    pub fn adopt_legacy_cache(store: &Datastore, product: Product, artifact: &Artifact) {
+        if store.contains(&artifact.key) {
+            return;
+        }
+        let legacy = starfield_datasource_utils::cache_dir()
+            .join(LEGACY_CACHE_SUBDIR)
+            .join(product.file_name());
+        if !starfield_datasource_utils::file_exists_and_not_empty(&legacy) {
+            return;
+        }
+        let _ = store.import(artifact, &legacy);
     }
 
     /// Local path of a product if it is already cached, without fetching.
@@ -493,6 +531,61 @@ mod tests {
     }
 
     #[test]
+    fn a_pre_seam_cached_file_is_adopted_offline() {
+        // The regression this guards: moving to the datastore changed where
+        // products live on disk. A user who already had the file must not
+        // re-download it, and an OFFLINE user must still be able to load it.
+        //
+        // Uses the embedded 1995low bytes as a stand-in for a legacy download,
+        // so the test is real data and needs no network.
+        let cache = tempfile::tempdir().unwrap();
+        let legacy_dir = cache.path().join(LEGACY_CACHE_SUBDIR);
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        let legacy = legacy_dir.join(Product::Low1995.file_name());
+        std::fs::write(&legacy, EMBEDDED_LOW_1995).unwrap();
+
+        // Offline and mirrorless: if adoption does not happen, resolution has
+        // nowhere to go and this fails.
+        let store_root = tempfile::tempdir().unwrap();
+        let store = Datastore::builder()
+            .cache_root(store_root.path().to_path_buf())
+            .without_mirror()
+            .offline(true)
+            .build()
+            .unwrap();
+
+        let artifact = Product::Low1995.artifact();
+        assert!(!store.contains(&artifact.key));
+        store
+            .import(&artifact, &legacy)
+            .expect("import legacy file");
+        assert!(store.contains(&artifact.key));
+
+        let table = KarkoschkaTable::download_with(&store, Product::Low1995).unwrap();
+        assert_eq!(table.len(), Product::Low1995.expected_rows());
+    }
+
+    #[test]
+    fn import_rejects_a_corrupt_legacy_file() {
+        // Adoption runs the content check, so a truncated or wrong-kind legacy
+        // file is refused rather than promoted into the store. An HTML body is
+        // the realistic case: a login page saved under a data filename by an
+        // older, unvalidated downloader.
+        let store_root = tempfile::tempdir().unwrap();
+        let store = Datastore::builder()
+            .cache_root(store_root.path().to_path_buf())
+            .without_mirror()
+            .offline(true)
+            .build()
+            .unwrap();
+        let bad = store_root.path().join("bad.tab");
+        std::fs::write(&bad, "<!DOCTYPE html><html><body>login</body></html>").unwrap();
+        let artifact = Product::Low1995.artifact();
+        assert!(store.import(&artifact, &bad).is_err());
+        assert!(!store.contains(&artifact.key));
+    }
+
+    #[test]
     fn artifact_keys_are_archive_shaped_not_url_shaped() {
         // A relocated upstream must change a Source, not the cache layout or a
         // pinned digest. LP DAAC relocated its paths this year, so this is the
@@ -514,7 +607,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "live upstream; bypasses the mirror. Detects archive rot, so it must not be re-pointed at the datastore"]
+    #[ignore = "live upstream; must bypass the mirror and cache. Detects archive rot, so a warm or mirrored resolve would defeat it"]
     fn downloads_and_parses_the_high_resolution_product() {
         let dir = tempfile::tempdir().unwrap();
         let store = cold_upstream_store(dir.path());
@@ -525,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "live upstream; bypasses the mirror. Detects archive rot, so it must not be re-pointed at the datastore"]
+    #[ignore = "live upstream; must bypass the mirror and cache. Detects archive rot, so a warm or mirrored resolve would defeat it"]
     fn downloaded_1993_table_agrees_with_the_embedded_1995_one() {
         let dir = tempfile::tempdir().unwrap();
         let store = cold_upstream_store(dir.path());
