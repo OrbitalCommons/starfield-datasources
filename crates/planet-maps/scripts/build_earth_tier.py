@@ -36,7 +36,26 @@ BLOCK = 5
 # that hides bias, so it is stated rather than buried.
 COASTAL_RADIUS_CELLS = 2
 
-MAGIC = b"SFEMv1\n"
+MAGIC = b"SFEMv2\n"
+SCRIPT_VERSION = "2"
+
+# MCD12C1 is a Climate Modeling Grid product: plate carree on WGS84, spanning
+# -180..180 west-to-east and 90..-90 north-to-south, with cell EDGES on the
+# bounds. Geodetic latitude, since the datum is WGS84.
+#
+# These go in the header rather than living only in the product catalogue, so a
+# loader that has never heard of MCD12C1 still cannot misregister the grid by
+# half a cell or mirror it.
+LON0_DEG = -180.0        # longitude of column 0's LEFT edge
+LAT0_DEG = 90.0          # latitude of row 0's TOP edge
+LON_SENSE = 0            # 0 = east-positive, 1 = west-positive
+LAT_KIND = 1             # 0 = planetocentric, 1 = planetographic/geodetic
+REGISTRATION = 0         # 0 = cell edges on bounds, 1 = cell centres
+BODY_NAIF_ID = 399
+
+# Bump when any weight in IGBP changes: the fitted numbers are only defensible
+# if you can tell which fit produced a given artefact.
+CLASS_TABLE_VERSION = "igbp-fitted-1"
 
 # Endmember weights per IGBP class, fitted against published MODIS class-mean
 # shortwave albedos (Gao et al. 2005; MCD43 climatology, snow-free) and signed
@@ -173,9 +192,31 @@ def main(out_path):
           " consumer's layer.)", file=sys.stderr)
 
     # --- write ----------------------------------------------------------
-    header = MAGIC + struct.pack("<HHB", out_w, out_h, len(names))
-    header += ("\n".join(names) + "\n").encode()
     body = np.clip(acc * 255.0 + 0.5, 0, 255).astype(np.uint8).tobytes()
+    names_blob = "\n".join(names).encode()
+    provenance = (
+        f"MCD12C1 collection 061, granule {GRANULE}; "
+        f"class table {CLASS_TABLE_VERSION}; "
+        f"build_earth_tier.py v{SCRIPT_VERSION}; "
+        f"coastal radius {COASTAL_RADIUS_CELLS} cells; "
+        f"weights fitted to MODIS class-mean SW albedos "
+        f"(Gao et al. 2005; MCD43 climatology, snow-free)"
+    ).encode()
+
+    # All multi-byte fields little-endian.
+    header = MAGIC + struct.pack(
+        "<HHBBBBiddQ",
+        out_w, out_h, len(names),
+        LON_SENSE, LAT_KIND, REGISTRATION,
+        BODY_NAIF_ID,
+        LON0_DEG, LAT0_DEG,
+        len(body),
+    )
+    header += struct.pack("<H", len(names_blob)) + names_blob
+    header += struct.pack("<H", len(provenance)) + provenance
+
+    assert len(body) == len(names) * out_w * out_h, "payload length mismatch"
+
     with gzip.open(out_path, "wb", compresslevel=9) as fh:
         fh.write(header)
         fh.write(body)

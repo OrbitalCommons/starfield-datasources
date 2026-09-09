@@ -23,6 +23,9 @@
 pub mod grid;
 pub mod map;
 pub mod products;
+pub mod tier;
+
+pub use tier::{earth_tier, AbundanceTier, Registration, EARTH_TIER_GZ};
 
 pub use products::{require_product_for, MapProduct, PRODUCTS, USGS_MOSAIC_BASE_URL};
 
