@@ -19,9 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use starfield::{Result, StarfieldError};
-use starfield_datasource_utils::{
-    download_to_file, ensure_cache_subdir, file_exists_and_not_empty,
-};
+use starfield_datastore::{Artifact, ArtifactKey, Datastore, Freshness, Provenance, Source};
 
 use crate::albedo::{AlbedoKind, SpectralAlbedo};
 use crate::body::SpectralBody;
@@ -32,8 +30,9 @@ const EMBEDDED_LOW_1995: &str = include_str!("../data/1995low.tab");
 /// Base URL of the `gbat_0001` data directory.
 pub const PDS_DATA_BASE_URL: &str = "https://pds-atmospheres.nmsu.edu/PDS/data/gbat_0001/data/";
 
-/// Cache subdirectory used for downloaded products.
-const CACHE_SUBDIR: &str = "karkoschka";
+/// Artifact key prefix. Archive-shaped rather than URL-shaped, so a relocated
+/// upstream changes a [`Source`] and not the cache layout or anyone's pin.
+const KEY_PREFIX: &str = "pds/gbat_0001";
 
 /// Phase angle of the Jupiter column in the 1995 tables, per the PDS label.
 const JUPITER_PHASE_DEG: f64 = 6.8;
@@ -94,6 +93,30 @@ impl Product {
         }
     }
 
+    /// This product as a datastore [`Artifact`].
+    ///
+    /// `Immutable`: a numbered PDS volume file never changes. The default
+    /// content check rejects an HTML body, which is what an archive soft-404 or
+    /// a captive portal actually returns — verified against a live USGS
+    /// soft-404 during integration.
+    pub fn artifact(&self) -> Artifact {
+        Artifact::new(
+            ArtifactKey::new(format!("{KEY_PREFIX}/{}", self.file_name()))
+                .expect("static key is well-formed"),
+            vec![Source::new(self.url())],
+        )
+        .with_freshness(Freshness::Immutable)
+        .with_provenance(Provenance {
+            description: format!(
+                "Karkoschka spectrophotometry of the jovian planets and Titan, \
+                 PDS Atmospheres volume gbat_0001, {}",
+                self.file_name()
+            ),
+            license: "public-domain".into(),
+            citation: Some("Karkoschka 1998, Icarus 133, 134; PDS DOI 10.17189/2bp8-k793".into()),
+        })
+    }
+
     /// Provenance string recorded on every spectrum from this product.
     fn source(&self) -> &'static str {
         match self {
@@ -129,20 +152,28 @@ impl KarkoschkaTable {
         Self::parse(product, &text)
     }
 
-    /// Fetch a product into the starfield cache and parse it.
+    /// Resolve a product through `starfield-datastore` and parse it.
     ///
-    /// Re-parses the cached copy on subsequent calls rather than re-fetching.
+    /// Resolution is local cache, then the organisation mirror, and upstream
+    /// only when `STARFIELD_ALLOW_UPSTREAM=1` — so a working checkout depends on
+    /// one service rather than on the PDS Atmospheres node being up. Repeat
+    /// calls are served from disk.
+    ///
+    /// Use [`KarkoschkaTable::download_with`] to supply a configured store.
     pub fn download(product: Product) -> Result<Self> {
-        let path = Self::cached_path(product)?;
-        if !file_exists_and_not_empty(&path) {
-            download_to_file(&product.url(), &path, 60)?;
-        }
+        let store = Datastore::from_env().map_err(to_starfield)?;
+        Self::download_with(&store, product)
+    }
+
+    /// As [`KarkoschkaTable::download`], against a caller-configured store.
+    pub fn download_with(store: &Datastore, product: Product) -> Result<Self> {
+        let path = store.get(&product.artifact()).map_err(to_starfield)?;
         Self::from_file(product, path)
     }
 
-    /// Where [`KarkoschkaTable::download`] puts a product.
-    pub fn cached_path(product: Product) -> Result<PathBuf> {
-        Ok(ensure_cache_subdir(CACHE_SUBDIR)?.join(product.file_name()))
+    /// Local path of a product if it is already cached, without fetching.
+    pub fn cached_path(store: &Datastore, product: Product) -> Option<PathBuf> {
+        store.peek(&product.artifact().key)
     }
 
     /// Parse the fixed-column ASCII body of a PDS table.
@@ -276,6 +307,14 @@ impl KarkoschkaTable {
     }
 }
 
+/// Map a datastore error into the workspace error type.
+///
+/// The datastore deliberately carries its own error type — it must not depend
+/// on `starfield` — so the message is preserved rather than the variant.
+fn to_starfield(e: starfield_datastore::DatastoreError) -> StarfieldError {
+    StarfieldError::DataError(e.to_string())
+}
+
 /// What the archive's column for `body` actually measures, per the PDS label.
 fn albedo_kind(body: SpectralBody) -> AlbedoKind {
     match body {
@@ -292,6 +331,28 @@ fn albedo_kind(body: SpectralBody) -> AlbedoKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A store guaranteed to reach upstream on every call: an empty cache root,
+    /// no mirror, and upstream enabled programmatically rather than from the
+    /// environment.
+    ///
+    /// The two live tests below are **upstream-rot canaries** — they exist to
+    /// detect that a PDS URL has died or relocated, which is not hypothetical
+    /// (LP DAAC relocated its paths this year). Serving them from the mirror or
+    /// a warm cache would defeat them: the mirror would go on returning a copy
+    /// of a product whose upstream URL died years ago and the test would pass
+    /// forever.
+    ///
+    /// `allow_upstream` is set here rather than read from `STARFIELD_ALLOW_UPSTREAM`
+    /// so that a missing variable cannot turn the canary into a silent skip.
+    fn cold_upstream_store(dir: &std::path::Path) -> Datastore {
+        Datastore::builder()
+            .cache_root(dir.to_path_buf())
+            .without_mirror()
+            .allow_upstream(true)
+            .build()
+            .expect("build cold store")
+    }
 
     /// The first three and last rows of the vendored 1995low.tab, verbatim.
     const EXCERPT: &str = " 300.4  300.31   .0000 .2128 .2532 .5306 .6933 .0431\n\
@@ -432,6 +493,19 @@ mod tests {
     }
 
     #[test]
+    fn artifact_keys_are_archive_shaped_not_url_shaped() {
+        // A relocated upstream must change a Source, not the cache layout or a
+        // pinned digest. LP DAAC relocated its paths this year, so this is the
+        // failure mode being designed against rather than a hypothetical.
+        let a = Product::Low1995.artifact();
+        assert_eq!(a.key.as_str(), "pds/gbat_0001/1995low.tab");
+        assert!(!a.key.as_str().contains("://"));
+        assert_eq!(a.sources.len(), 1);
+        assert!(a.sources[0].url.contains("pds-atmospheres.nmsu.edu"));
+        assert_eq!(a.freshness, Freshness::Immutable);
+    }
+
+    #[test]
     fn urls_point_at_the_pds_volume() {
         assert_eq!(
             Product::Low1995.url(),
@@ -442,7 +516,9 @@ mod tests {
     #[test]
     #[ignore = "live upstream; bypasses the mirror. Detects archive rot, so it must not be re-pointed at the datastore"]
     fn downloads_and_parses_the_high_resolution_product() {
-        let t = KarkoschkaTable::download(Product::High1995).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = cold_upstream_store(dir.path());
+        let t = KarkoschkaTable::download_with(&store, Product::High1995).unwrap();
         assert_eq!(t.len(), 4750);
         let (lo, hi) = t.albedo(SpectralBody::Jupiter).unwrap().range_nm();
         assert!(lo >= 520.0 && hi <= 995.5, "range {lo}-{hi}");
@@ -451,7 +527,9 @@ mod tests {
     #[test]
     #[ignore = "live upstream; bypasses the mirror. Detects archive rot, so it must not be re-pointed at the datastore"]
     fn downloaded_1993_table_agrees_with_the_embedded_1995_one() {
-        let old = KarkoschkaTable::download(Product::Table1993).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = cold_upstream_store(dir.path());
+        let old = KarkoschkaTable::download_with(&store, Product::Table1993).unwrap();
         let new = KarkoschkaTable::load_embedded().unwrap();
         // Independent reductions three years apart: Uranus is spectrally stable,
         // so the two should agree to a few percent away from strong methane bands.
