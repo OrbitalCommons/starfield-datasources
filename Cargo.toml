@@ -13,6 +13,7 @@ members = [
     "crates/mpc",
     "crates/nsa",
     "crates/reflectance-library",
+    "crates/planet-maps",
     "crates/planet-spectra",
     "crates/solar-spectrum",
     "crates/rubin",

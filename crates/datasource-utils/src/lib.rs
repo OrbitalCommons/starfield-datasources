@@ -4,11 +4,13 @@
 //! used across multiple datasource implementations.
 
 pub mod cache;
+pub mod checksum;
 pub mod curve;
 pub mod download;
 pub mod http;
 
 pub use cache::{cache_dir, ensure_cache_dir, ensure_cache_subdir, file_exists_and_not_empty};
+pub use checksum::{sha256_bytes, sha256_file, verify_sha256};
 pub use curve::SampledCurve;
 pub use download::download_to_file;
 pub use http::{
