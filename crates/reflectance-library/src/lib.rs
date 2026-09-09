@@ -87,6 +87,18 @@ pub enum Endmember {
     FreshBasalt,
     /// Weathered basalt.
     WeatheredBasalt,
+    /// Dried playa mud — the reddened arid surface for barren terrain.
+    ///
+    /// Iron-oxide reddening makes arid soil markedly redder than beach sand:
+    /// its 700/450 nm ratio is 2.1 against Sand's 1.5. Barren terrain is a
+    /// large fraction of Earth's illuminated disk, so using quartz beach sand
+    /// there would bias the integrated colour blue.
+    ///
+    /// splib07 has **no bulk desert-soil spectrum** — its soils chapter is
+    /// mineral mixtures, and the entries that redden more strongly are pure
+    /// minerals rather than field-collected surfaces. This is a real arid field
+    /// sample and is the closest honest choice in this archive.
+    AridSoil,
     /// Old black asphalt road — the dark half of an urban surface.
     Asphalt,
     /// Light grey concrete road — the bright half of an urban surface.
@@ -99,7 +111,7 @@ pub enum Endmember {
 
 impl Endmember {
     /// Every endmember in the library.
-    pub const ALL: [Endmember; 11] = [
+    pub const ALL: [Endmember; 12] = [
         Endmember::OpenOcean,
         Endmember::CoastalWater,
         Endmember::GreenVegetation,
@@ -109,6 +121,7 @@ impl Endmember {
         Endmember::WaterIce,
         Endmember::FreshBasalt,
         Endmember::WeatheredBasalt,
+        Endmember::AridSoil,
         Endmember::Asphalt,
         Endmember::Concrete,
     ];
@@ -125,6 +138,7 @@ impl Endmember {
             Endmember::WaterIce => "WaterIce",
             Endmember::FreshBasalt => "FreshBasalt",
             Endmember::WeatheredBasalt => "WeatheredBasalt",
+            Endmember::AridSoil => "AridSoil",
             Endmember::Asphalt => "Asphalt",
             Endmember::Concrete => "Concrete",
         }
@@ -426,6 +440,23 @@ mod tests {
             );
         }
         assert!(ocean.at_nm(450.0).unwrap() > ocean.at_nm(650.0).unwrap());
+    }
+
+    #[test]
+    fn arid_soil_is_redder_than_beach_sand() {
+        // The distinction that matters for Earth's integrated colour: barren
+        // terrain is iron-oxide reddened, beach quartz sand is not, and barren
+        // is a large fraction of the illuminated disk.
+        let l = library();
+        let arid = l.get(Endmember::AridSoil).unwrap();
+        let sand = l.get(Endmember::Sand).unwrap();
+        let arid_slope = arid.at_nm(700.0).unwrap() / arid.at_nm(450.0).unwrap();
+        let sand_slope = sand.at_nm(700.0).unwrap() / sand.at_nm(450.0).unwrap();
+        assert!(
+            arid_slope > 1.3 * sand_slope,
+            "arid {arid_slope} vs sand {sand_slope}"
+        );
+        assert!(arid_slope > 2.0, "arid soil slope {arid_slope}");
     }
 
     #[test]

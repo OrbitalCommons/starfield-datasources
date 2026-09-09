@@ -60,6 +60,8 @@ ENDMEMBERS = [
      "Fresh basalt; analogue for lunar mare and Mars dark terrain"),
     ("WeatheredBasalt", "splib07a_Basalt_weathered_BR93-43_BECKb_AREF",
      "Weathered basalt"),
+    ("AridSoil", "splib07a_Stonewall_Playa_Dry_Mud_2001_ASDFRa_AREF",
+     "Dried playa mud; the reddened arid-surface endmember for barren terrain"),
     ("Asphalt", "splib07a_Asphalt_GDS376_Blck_Road_old_ASDFRa_AREF",
      "Old black asphalt road; the dark half of an urban surface"),
     ("Concrete", "splib07a_Concrete_GDS375_Lt_Gry_Road_ASDFRa_AREF",
