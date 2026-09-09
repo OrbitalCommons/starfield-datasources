@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased — datastore seam
+
+### starfield-planet-spectra (breaking)
+
+Step 5 of the `starfield-datastore` rollout begins here.
+
+- `KarkoschkaTable::download` resolves local cache → organisation mirror →
+  upstream, reaching upstream only under `STARFIELD_ALLOW_UPSTREAM=1`
+- **Breaking:** `cached_path(product) -> Result<PathBuf>` becomes
+  `cached_path(&Datastore, product) -> Option<PathBuf>`. It now *peeks* at the
+  store rather than computing a path, so it answers "is this cached" instead of
+  "where would it go". The crate is unpublished, so no released consumer breaks
+- New `download_with(&Datastore, product)` for a caller-configured store
+- A pre-seam cache at `~/.cache/starfield/karkoschka/` is **adopted, not
+  orphaned**: the first call after upgrading imports it rather than
+  re-downloading a file the user already has. Import runs the content check, so
+  a corrupt or wrong-kind legacy file is refused rather than promoted
+- Artifact keys are archive-shaped (`pds/gbat_0001/1995low.tab`), so a relocated
+  upstream changes a `Source` and not the cache layout or a pinned digest
+
+### Test conventions
+
+- Upstream-rot canary ignore reasons now read "must bypass the mirror and cache"
+  rather than "must not be re-pointed at the datastore". They *do* use the
+  datastore now — in a cold, mirrorless configuration with `allow_upstream` set
+  in code — so the old wording had become misleading
+
 ## 0.14.0 — Earth composition tier and a shared sampling interface
 
 ### starfield-planet-maps
