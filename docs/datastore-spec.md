@@ -1,5 +1,12 @@
 # `starfield-datastore` — a pull-through artifact cache
 
+> **The authoritative API specification is
+> [OrbitalCommons/starfield#189](https://github.com/OrbitalCommons/starfield/issues/189).**
+> The crate lives in the `starfield` repository, not this one. This document is
+> the design rationale — why the layers are arranged this way, what the mirror
+> and proxy modes trade off, and which archive failures drove the validation
+> rules. Where the two disagree about an interface, #189 wins.
+
 A single layer through which every crate in this workspace fetches every byte
 it does not generate itself: ephemeris kernels, catalog shards, PDS tables,
 multi-gigabyte mosaics. It resolves a request through a chain — local disk,
