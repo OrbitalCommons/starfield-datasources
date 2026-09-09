@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 starfield = { workspace = true }
 starfield-datasource-utils = { version = "0.1.0", path = "../datasource-utils" }
+starfield-datastore = "0.1.0"
 
 [dev-dependencies]
 tempfile = "3"
