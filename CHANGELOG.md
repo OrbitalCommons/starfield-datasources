@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.11.0 — Solar reference spectrum
+
+### starfield-solar-spectrum 0.1.0 (new)
+
+focalplane D1.1. The illumination half of resolved-body rendering: a reflectance
+is dimensionless and becomes photons only once multiplied by the solar spectrum.
+
+- TSIS-1 Hybrid Solar Reference Spectrum v2 (Coddington et al. 2023,
+  doi:10.1029/2022EA002637), the recognised international reference standard
+- Embedded at 1 nm box means over the full archive range, 202–2730 nm (2528 bins,
+  86 KB), with per-bin archive uncertainty
+- `scripts/build_table.py` regenerates it from LASP LISIRD, streaming the native
+  0.001–0.01 nm product in chunks and reducing as it goes
+- Resampled from the **native** product, not LISIRD's pre-smoothed 0.1 nm sibling:
+  averaging the smoothed product differs from the true box mean by up to 1.1%
+  across strong Fraunhofer lines, larger than the archive's own 0.3% uncertainty
+- `at_nm` returns the containing bin rather than interpolating, because
+  interpolating between box means of a line-blanketed spectrum implies a
+  resolution the data does not have
+- `irradiance_over` / `mean_over` / `weighted_irradiance` weight partial end bins
+  proportionally; `weighted_irradiance` takes a filter or QE response
+- `scale_factor_at_au` keeps the 1/r² conversion visible at call sites
+- Integrating the table recovers 1325.8 W m⁻² — 97.4% of the solar constant,
+  matching the archive's stated coverage, and asserted in the tests
+
+### Facade crate
+
+- New `solar-spectrum` feature (not default)
+
 ## 0.10.0 — Planetary spectral albedos
 
 ### starfield-planet-spectra 0.1.0 (new)

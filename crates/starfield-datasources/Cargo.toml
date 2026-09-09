@@ -1,6 +1,6 @@
 [package]
 name = "starfield-datasources"
-version = "0.10.0"
+version = "0.11.0"
 description = "Astronomical data source clients for the starfield ecosystem"
 edition.workspace = true
 license.workspace = true
@@ -19,6 +19,7 @@ mast = ["dep:starfield-mast"]
 mpc = ["dep:starfield-mpc"]
 nsa = ["dep:starfield-nsa"]
 planet-spectra = ["dep:starfield-planet-spectra"]
+solar-spectrum = ["dep:starfield-solar-spectrum"]
 rubin = ["dep:starfield-rubin"]
 
 [dependencies]
@@ -32,4 +33,5 @@ starfield-mast = { path = "../mast", optional = true }
 starfield-mpc = { path = "../mpc", optional = true }
 starfield-nsa = { path = "../nsa", optional = true }
 starfield-planet-spectra = { path = "../planet-spectra", optional = true }
+starfield-solar-spectrum = { path = "../solar-spectrum", optional = true }
 starfield-rubin = { path = "../rubin", optional = true }

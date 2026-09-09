@@ -13,6 +13,7 @@ members = [
     "crates/mpc",
     "crates/nsa",
     "crates/planet-spectra",
+    "crates/solar-spectrum",
     "crates/rubin",
     "crates/starfield-datasources",
 ]
