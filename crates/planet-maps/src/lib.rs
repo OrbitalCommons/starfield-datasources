@@ -17,6 +17,20 @@
 //! Do not apply a `LongitudeSense` first; that is for matching Horizons and IAU
 //! cartographic output, not for sampling a map.
 //!
+//! # What the embedded tiers can and cannot support
+//!
+//! Earth is real per-texel composition, derived from MODIS sub-pixel land-cover
+//! fractions. Mars is **one endmember**: brightness varies across the disk and
+//! colour does not, pending CRISM/OMEGA terrain units.
+//!
+//! The Mars source is also contrast-normalised. Syrtis Major and Arabia Terra
+//! differ by 1.10x in the Viking colour mosaic against roughly 2.7x on the real
+//! planet, and Viking's polar coverage is sparse enough that the poles are
+//! interpolated rather than measured. The dichotomy is present and correctly
+//! oriented — Solis Lacus to Amazonis is 2x — but absolute contrast is
+//! understated, which is one more reason its product entry is `calibrated:
+//! false`. Appearance, not photometry.
+//!
 //! [`starfield-planet-spectra`]: https://docs.rs/starfield-planet-spectra
 //! [`starfield-reflectance-library`]: https://docs.rs/starfield-reflectance-library
 
@@ -25,7 +39,7 @@ pub mod map;
 pub mod products;
 pub mod tier;
 
-pub use tier::{earth_tier, AbundanceTier, Registration, EARTH_TIER_GZ};
+pub use tier::{earth_tier, mars_tier, AbundanceTier, Registration, EARTH_TIER_GZ, MARS_TIER_GZ};
 
 pub use products::{require_product_for, MapProduct, PRODUCTS, USGS_MOSAIC_BASE_URL};
 

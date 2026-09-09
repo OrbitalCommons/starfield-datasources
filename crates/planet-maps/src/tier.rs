@@ -21,7 +21,7 @@ use crate::grid::{Latitude, Longitude, MapGrid, RowOrder};
 use crate::map::{SampleFootprint, SurfaceSampler, MU_FLOOR};
 
 /// Format magic. Bump on any layout change.
-const MAGIC: &[u8] = b"SFEMv2\n";
+const MAGIC: &[u8] = b"SFEMv3\n";
 
 /// Where a grid's coordinate bounds sit relative to its cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +42,7 @@ pub struct AbundanceTier {
     grid: MapGrid,
     registration: Registration,
     naif_id: i32,
+    scale: f32,
     provenance: String,
     /// Mip pyramid. Level 0 is full resolution; each level is plane-major,
     /// `planes[e * w * h + row * w + col]`, 255 = abundance 1.0.
@@ -98,6 +99,12 @@ impl AbundanceTier {
         p += 8;
         let payload_len = u64::from_le_bytes(b[p..p + 8].try_into().unwrap()) as usize;
         p += 8;
+        need(p, 4, b)?;
+        let scale = f32::from_le_bytes(b[p..p + 4].try_into().unwrap());
+        p += 4;
+        if !scale.is_finite() || scale <= 0.0 {
+            return Err(err(format!("scale {scale} must be finite and positive")));
+        }
 
         let take_str = |p: &mut usize| -> Result<String> {
             need(*p, 2, b)?;
@@ -173,6 +180,7 @@ impl AbundanceTier {
                 other => return Err(err(format!("unknown registration {other}"))),
             },
             naif_id,
+            scale,
             provenance,
             levels: build_pyramid(TierLevel {
                 width,
@@ -217,10 +225,20 @@ impl AbundanceTier {
         self.levels.len()
     }
 
-    /// Abundance of plane `e` at `(col, row)` of `level`, in `[0, 1]`.
+    /// Full-scale value one raw unit represents.
+    ///
+    /// A one-endmember tier whose albedo exceeds the endmember's own band mean
+    /// has an abundance above 1, which `u8/255` cannot hold. Rather than fork
+    /// the format for that case, the header carries a scale: abundance is
+    /// `raw / 255 * scale`. Composition tiers use `1.0`.
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    /// Abundance of plane `e` at `(col, row)` of `level`.
     fn plane_at(&self, level: usize, e: usize, col: usize, row: usize) -> f64 {
         let l = &self.levels[level];
-        l.planes[e * l.width * l.height + row * l.width + col] as f64 / 255.0
+        l.planes[e * l.width * l.height + row * l.width + col] as f64 / 255.0 * self.scale as f64
     }
 
     /// Mix at a texel of a given level.
@@ -300,9 +318,11 @@ impl AbundanceTier {
 
     /// Largest plane sum over the grid, in raw u8 units.
     ///
-    /// Should not exceed `255 + n_endmembers`: abundances sum to at most 1, and
-    /// each plane can round up by at most one unit. A larger value means the
-    /// planes do not describe a partition and the file is corrupt.
+    /// For a composition tier (`scale == 1.0`) this should not exceed
+    /// `255 + n_endmembers`: abundances sum to at most 1, and each plane can
+    /// round up by at most one unit. A larger value means the planes do not
+    /// describe a partition and the file is corrupt. A scaled one-endmember
+    /// tier is not a partition and this bound does not apply to it.
     pub fn max_plane_sum(&self) -> u32 {
         let l = &self.levels[0];
         let cells = l.width * l.height;
@@ -368,6 +388,20 @@ fn build_pyramid(base: TierLevel) -> Vec<TierLevel> {
         });
     }
     levels
+}
+
+/// The embedded Mars tier: USGS Viking colour mosaic at 0.1°, one endmember.
+///
+/// Mars has no composition data yet, so this is a **one-endmember** tier:
+/// brightness varies across the disk and colour does not. It is the offline
+/// equivalent of the scalar-map path, and it is what `AbundanceTier::scale`
+/// exists for — a single endmember reproducing an albedo above its own band
+/// mean has an abundance above 1.
+pub const MARS_TIER_GZ: &[u8] = include_bytes!("../data/mars_albedo_0p1deg.bin.gz");
+
+/// Parse the embedded Mars tier.
+pub fn mars_tier() -> Result<AbundanceTier> {
+    AbundanceTier::from_gz_bytes(MARS_TIER_GZ)
 }
 
 /// The embedded Earth tier: MODIS MCD12G1-derived endmember abundances at 0.25°.
@@ -598,6 +632,85 @@ mod tests {
             assert!(mix.total_weight() > 0.0);
             assert!(fp.anisotropy > 1.0);
         }
+    }
+
+    #[test]
+    fn mars_tier_has_the_expected_shape() {
+        let t = mars_tier().unwrap();
+        assert_eq!(t.size(), (3600, 1800));
+        assert_eq!(t.naif_id(), 499);
+        assert_eq!(t.endmembers(), &[Endmember::WeatheredBasalt]);
+        // Mars is planetocentric and starts at longitude 0, unlike Earth.
+        assert_eq!(t.grid().latitude, Latitude::Planetocentric);
+        assert_eq!(t.grid().lon0_deg, 0.0);
+        // A one-endmember tier reproducing an albedo above the endmember's own
+        // band mean needs a scale above 1.
+        assert!(t.scale() > 1.0, "scale {}", t.scale());
+    }
+
+    #[test]
+    fn the_mars_albedo_dichotomy_is_the_right_way_round() {
+        // Registration check via real albedo features: Solis Lacus is a classic
+        // dark marking, Amazonis a bright dust-mantled plain. A mirrored map
+        // swaps them, and the difference is 2x so it cannot be noise.
+        //
+        // Deliberately not Syrtis Major vs Arabia Terra, the more famous pair:
+        // in this product they differ by only 1.10x, against roughly 2.7x on
+        // the real planet. The Viking colour mosaic is contrast-normalised, so
+        // that pair does not discriminate here. See the crate docs.
+        let t = mars_tier().unwrap();
+        let at = |lon: f64, lat: f64| {
+            t.sample(lon.to_radians(), lat.to_radians())
+                .unwrap()
+                .weights()[0]
+                .1
+        };
+        let solis = at(270.0, -26.0);
+        let amazonis = at(200.0, 15.0);
+        assert!(
+            amazonis > 1.8 * solis,
+            "Amazonis {amazonis} should be well above Solis Lacus {solis}"
+        );
+    }
+
+    #[test]
+    fn mars_polar_values_are_present_but_not_a_cap() {
+        // Viking's polar coverage is sparse and the mosaic fills the gaps with
+        // black. The generator excludes those from its bin means, so the poles
+        // carry a plausible value rather than an encoded dark cap -- but they
+        // are not a real seasonal cap either, and nothing should read them as
+        // one. The cap belongs in the seasonal overlay of the plan, not here.
+        let t = mars_tier().unwrap();
+        let at = |lat: f64| t.sample(0.0, lat.to_radians()).unwrap().weights()[0].1 * 0.147;
+        for lat in [-89.5, -87.0, 87.0] {
+            let a = at(lat);
+            assert!((0.05..0.45).contains(&a), "lat {lat} albedo {a}");
+        }
+    }
+
+    #[test]
+    fn mars_abundance_reproduces_a_plausible_albedo() {
+        // Abundance x the endmember's band mean is the albedo the tier encodes.
+        // Mars' disk-averaged geometric albedo is ~0.17, and no texel should be
+        // outside a plausible range for a rocky surface.
+        let t = mars_tier().unwrap();
+        let band_mean = 0.147;
+        let mut lo = f64::MAX;
+        let mut hi = f64::MIN;
+        for lon in (0..360).step_by(10) {
+            for lat in (-80..=80).step_by(10) {
+                let a = t
+                    .sample((lon as f64).to_radians(), (lat as f64).to_radians())
+                    .unwrap()
+                    .weights()[0]
+                    .1
+                    * band_mean;
+                lo = lo.min(a);
+                hi = hi.max(a);
+            }
+        }
+        assert!(lo > 0.02, "darkest albedo {lo}");
+        assert!(hi < 0.55, "brightest albedo {hi}");
     }
 
     #[test]

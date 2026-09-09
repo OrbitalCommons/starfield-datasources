@@ -36,8 +36,8 @@ BLOCK = 5
 # that hides bias, so it is stated rather than buried.
 COASTAL_RADIUS_CELLS = 2
 
-MAGIC = b"SFEMv2\n"
-SCRIPT_VERSION = "2"
+MAGIC = b"SFEMv3\n"
+SCRIPT_VERSION = "3"
 
 # MCD12C1 is a Climate Modeling Grid product: plate carree on WGS84, spanning
 # -180..180 west-to-east and 90..-90 north-to-south, with cell EDGES on the
@@ -212,6 +212,8 @@ def main(out_path):
         LON0_DEG, LAT0_DEG,
         len(body),
     )
+    # Composition tier: abundances are a partition, so full scale is 1.0.
+    header += struct.pack("<f", 1.0)
     header += struct.pack("<H", len(names_blob)) + names_blob
     header += struct.pack("<H", len(provenance)) + provenance
 
