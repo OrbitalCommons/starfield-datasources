@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.14.0 — Earth composition tier and a shared sampling interface
+
+### starfield-planet-maps
+
+- `AbundanceTier`: per-texel endmember abundances, so colour varies across the
+  disk rather than only brightness. The embedded Earth tier is MODIS MCD12C1
+  sub-pixel IGBP fractions collapsed onto the shipped endmembers, 1440x720 x 9
+  endmembers at 0.25 deg, 0.91 MB
+- The tier file is **self-describing**: grid geometry, registration, NAIF id and
+  provenance live in its header, so a loader that has never heard of MCD12C1
+  cannot misregister it by half a cell or mirror it. Payload length is declared
+  and checked, so a truncated file fails at load rather than rendering as a
+  dark stripe
+- `SurfaceSampler` gives one interface over both backings — a consumer should
+  not branch on whether a body happens to have real composition data. Both use
+  the same level-selection policy, so a tier-backed and a map-backed body do not
+  blur differently at the same geometry
+- `AlbedoMap` takes its endmember band mean at construction rather than per
+  sample: it is a property of (endmember, band), and taking it once means
+  `sample_area` cannot fail for a reason unrelated to the position asked about
+
+### starfield-reflectance-library
+
+- `Endmember::AridSoil` — a real arid field sample for barren terrain. Mapping
+  barren onto beach sand would bias Earth's integrated colour blue by roughly
+  the Rayleigh term, since barren is a large fraction of the illuminated disk
+- `Endmember::Shade` — identically zero reflectance, the standard
+  spectral-mixture-analysis shade term and the only synthetic member of the
+  enum. splib07's vegetation is leaf-level, and a leaf is far brighter than a
+  canopy: pure green vegetation integrates to 0.218 shortwave against published
+  forest means of 0.10-0.15, so without it Earth's vegetated surfaces cannot be
+  matched to measured albedos at all
+- `Endmember::Asphalt`, `Endmember::Concrete` — urban cover is strongly bimodal
+  in brightness, so two endmembers rather than one average that represents
+  neither
+
 ## 0.13.0 — Planetary albedo maps
 
 ### starfield-planet-maps 0.1.0 (new)

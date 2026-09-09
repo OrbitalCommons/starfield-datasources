@@ -440,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires network access to the PDS Atmospheres node"]
+    #[ignore = "live upstream; bypasses the mirror. Detects archive rot, so it must not be re-pointed at the datastore"]
     fn downloads_and_parses_the_high_resolution_product() {
         let t = KarkoschkaTable::download(Product::High1995).unwrap();
         assert_eq!(t.len(), 4750);
@@ -449,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires network access to the PDS Atmospheres node"]
+    #[ignore = "live upstream; bypasses the mirror. Detects archive rot, so it must not be re-pointed at the datastore"]
     fn downloaded_1993_table_agrees_with_the_embedded_1995_one() {
         let old = KarkoschkaTable::download(Product::Table1993).unwrap();
         let new = KarkoschkaTable::load_embedded().unwrap();

@@ -13,7 +13,7 @@ use starfield_gaia::Cone;
 use starfield_mast::{MastClient, Wcs};
 
 #[test]
-#[ignore]
+#[ignore = "live upstream; bypasses the mirror. Detects archive rot, so it must not be re-pointed at the datastore"]
 fn end_to_end_m101_cone_search_and_first_drz_download() {
     // 3' cone around the M101 nucleus — guaranteed dense HST coverage.
     let cone = Cone::from_degrees(210.802, 54.349, 0.05);
