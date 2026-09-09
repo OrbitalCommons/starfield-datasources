@@ -30,4 +30,8 @@
   Re-pointing one at the mirror silently defeats it: the mirror would go on
   serving a copy of a product whose upstream URL died years ago. See
   OrbitalCommons/starfield#189
+- A canary that cannot reach upstream must **fail**, never skip. `#[ignore]`
+  already gates these off by default; any second gate (an env var, a missing
+  credential) that turns into a silent pass converts the canary into a
+  permanent false green, which is worse than not having it
 - Real data excerpts should be used for parser unit tests
