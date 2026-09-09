@@ -101,6 +101,23 @@ pub enum Endmember {
     AridSoil,
     /// Old black asphalt road — the dark half of an urban surface.
     Asphalt,
+    /// Photometric shade: identically zero reflectance at every wavelength.
+    ///
+    /// The standard shade endmember of spectral mixture analysis, and the only
+    /// synthetic member of this enum — it has no laboratory spectrum because it
+    /// is not a material. It accounts for sub-texel structure that removes light
+    /// without changing its colour: canopy shadowing, gaps, and multiple
+    /// scattering into the surface.
+    ///
+    /// It is not a nicety. splib07's vegetation spectra are **leaf-level**, and
+    /// a leaf is far brighter than a canopy: pure [`Endmember::GreenVegetation`]
+    /// integrates to a shortwave albedo of 0.218, while published forest
+    /// class-means are 0.10–0.15. Without a shade component the vegetated
+    /// surfaces of Earth cannot be made to match measured albedos at all.
+    ///
+    /// Because its reflectance is zero everywhere, it has no wavelength range
+    /// of its own and never restricts a band a mix can be evaluated over.
+    Shade,
     /// Light grey concrete road — the bright half of an urban surface.
     ///
     /// Urban land cover is strongly bimodal in brightness, so asphalt and
@@ -111,7 +128,7 @@ pub enum Endmember {
 
 impl Endmember {
     /// Every endmember in the library.
-    pub const ALL: [Endmember; 12] = [
+    pub const ALL: [Endmember; 13] = [
         Endmember::OpenOcean,
         Endmember::CoastalWater,
         Endmember::GreenVegetation,
@@ -124,6 +141,7 @@ impl Endmember {
         Endmember::AridSoil,
         Endmember::Asphalt,
         Endmember::Concrete,
+        Endmember::Shade,
     ];
 
     /// The identifier used in the embedded table and on the wire.
@@ -139,6 +157,7 @@ impl Endmember {
             Endmember::FreshBasalt => "FreshBasalt",
             Endmember::WeatheredBasalt => "WeatheredBasalt",
             Endmember::AridSoil => "AridSoil",
+            Endmember::Shade => "Shade",
             Endmember::Asphalt => "Asphalt",
             Endmember::Concrete => "Concrete",
         }
@@ -256,6 +275,24 @@ impl ReflectanceLibrary {
             let curve = SampledCurve::new(wavelengths, values)
                 .map_err(|e| StarfieldError::DataError(format!("{}: {e}", endmember.id())))?;
             spectra.insert(endmember, Reflectance { endmember, curve });
+        }
+
+        // Shade is synthetic: identically zero, spanning every wavelength any
+        // real endmember covers, so it never narrows a mix's usable range.
+        let (lo, hi) = spectra.values().fold((f64::MAX, f64::MIN), |(lo, hi), r| {
+            let (a, b) = r.range_nm();
+            (lo.min(a), hi.max(b))
+        });
+        if lo < hi {
+            let curve = SampledCurve::new(vec![lo, hi], vec![0.0, 0.0])
+                .map_err(|e| StarfieldError::DataError(format!("Shade: {e}")))?;
+            spectra.insert(
+                Endmember::Shade,
+                Reflectance {
+                    endmember: Endmember::Shade,
+                    curve,
+                },
+            );
         }
 
         if spectra.is_empty() {
@@ -440,6 +477,40 @@ mod tests {
             );
         }
         assert!(ocean.at_nm(450.0).unwrap() > ocean.at_nm(650.0).unwrap());
+    }
+
+    #[test]
+    fn shade_is_zero_everywhere_and_never_narrows_a_band() {
+        let l = library();
+        let shade = l.get(Endmember::Shade).unwrap();
+        for nm in [400.0, 550.0, 900.0, 2000.0] {
+            assert_eq!(shade.at_nm(nm), Some(0.0), "at {nm} nm");
+        }
+        assert_eq!(shade.band_mean(400.0, 900.0), Some(0.0));
+        // It spans at least as wide as any real endmember, so mixing it in
+        // cannot make an otherwise-evaluable band return None.
+        let (slo, shi) = shade.range_nm();
+        for e in Endmember::ALL {
+            let (lo, hi) = l.get(e).unwrap().range_nm();
+            assert!(slo <= lo && shi >= hi, "{} exceeds Shade's range", e.id());
+        }
+    }
+
+    #[test]
+    fn shade_darkens_a_canopy_to_a_published_albedo() {
+        // The reason Shade exists: leaf-level spectra are far brighter than
+        // canopies. Pure green vegetation is well above published forest
+        // class-means; 55/45 with shade lands inside them.
+        let l = library();
+        let leaf_only = EndmemberMix::uniform(Endmember::GreenVegetation);
+        let canopy = EndmemberMix::new(vec![
+            (Endmember::GreenVegetation, 0.55),
+            (Endmember::Shade, 0.45),
+        ]);
+        let bare = leaf_only.band_mean(&l, 700.0, 900.0).unwrap();
+        let shaded = canopy.band_mean(&l, 700.0, 900.0).unwrap();
+        assert!((shaded - 0.55 * bare).abs() < 1e-12);
+        assert!(shaded < bare);
     }
 
     #[test]
