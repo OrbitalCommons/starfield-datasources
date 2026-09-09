@@ -169,44 +169,27 @@ impl KarkoschkaTable {
     /// Use [`KarkoschkaTable::download_with`] to supply a configured store.
     pub fn download(product: Product) -> Result<Self> {
         let store = Datastore::from_env().map_err(to_starfield)?;
+        // Adoption happens here and nowhere else. `download_with` stays
+        // hermetic so a caller who built a deliberately cold store gets one --
+        // see its docs.
+        adopt_legacy_cache(&store, product);
         Self::download_with(&store, product)
     }
 
     /// As [`KarkoschkaTable::download`], against a caller-configured store.
     ///
-    /// Adopts a pre-seam cached copy if one exists — see
-    /// [`KarkoschkaTable::adopt_legacy_cache`].
+    /// **Hermetic**: resolves through `store` and nothing else. It does not
+    /// consult the pre-seam cache directory, because a caller who deliberately
+    /// built a cold, mirrorless store — an upstream-rot canary, for instance —
+    /// must actually get one. Reaching into a global directory here would let a
+    /// stale file satisfy a test whose entire purpose is to contact the
+    /// archive.
+    ///
+    /// [`KarkoschkaTable::download`] performs legacy adoption before calling
+    /// this.
     pub fn download_with(store: &Datastore, product: Product) -> Result<Self> {
-        let artifact = product.artifact();
-        Self::adopt_legacy_cache(store, product, &artifact);
-        let path = store.get(&artifact).map_err(to_starfield)?;
+        let path = store.get(&product.artifact()).map_err(to_starfield)?;
         Self::from_file(product, path)
-    }
-
-    /// Import a pre-seam cached file into the store, if one is present and the
-    /// store does not already hold the artifact.
-    ///
-    /// Before the datastore seam this crate cached products at
-    /// `~/.cache/starfield/karkoschka/<file>`. Without this, the first call
-    /// after upgrading would re-fetch a file the user already has — and for a
-    /// consumer that is offline, or whose upstream has since died, it would fail
-    /// outright despite the data sitting on disk.
-    ///
-    /// Import runs the artifact's content check, so a truncated or corrupt
-    /// legacy file is rejected rather than adopted. Failure is deliberately
-    /// silent: a missing or unusable legacy file is not an error, it just means
-    /// there is nothing to adopt and the normal resolution chain proceeds.
-    pub fn adopt_legacy_cache(store: &Datastore, product: Product, artifact: &Artifact) {
-        if store.contains(&artifact.key) {
-            return;
-        }
-        let legacy = starfield_datasource_utils::cache_dir()
-            .join(LEGACY_CACHE_SUBDIR)
-            .join(product.file_name());
-        if !starfield_datasource_utils::file_exists_and_not_empty(&legacy) {
-            return;
-        }
-        let _ = store.import(artifact, &legacy);
     }
 
     /// Local path of a product if it is already cached, without fetching.
@@ -343,6 +326,44 @@ impl KarkoschkaTable {
             .filter_map(|&b| self.albedo(b))
             .collect()
     }
+}
+
+/// Import a pre-seam cached file into `store`, if one is present and the store
+/// does not already hold the artifact.
+///
+/// Before the datastore seam this crate cached products at
+/// `~/.cache/starfield/karkoschka/<file>`. Without adoption, the first call
+/// after upgrading would re-fetch a file the user already has — and an offline
+/// consumer, or one whose upstream has since died, would fail outright despite
+/// the data sitting on disk.
+fn adopt_legacy_cache(store: &Datastore, product: Product) {
+    adopt_legacy_cache_from(
+        store,
+        product,
+        &starfield_datasource_utils::cache_dir().join(LEGACY_CACHE_SUBDIR),
+    );
+}
+
+/// [`adopt_legacy_cache`] against an explicit directory, so the adoption path
+/// itself is testable rather than only the store's `import`.
+///
+/// The artifact is derived from `product` here rather than passed in, so a
+/// caller cannot pair a product with someone else's artifact.
+///
+/// Import runs the artifact's content check, so a truncated or wrong-kind
+/// legacy file is refused rather than promoted. Returns whether anything was
+/// adopted. Failure is not an error: nothing to adopt simply means the normal
+/// resolution chain proceeds.
+fn adopt_legacy_cache_from(store: &Datastore, product: Product, legacy_dir: &Path) -> bool {
+    let artifact = product.artifact();
+    if store.contains(&artifact.key) {
+        return false;
+    }
+    let legacy = legacy_dir.join(product.file_name());
+    if !starfield_datasource_utils::file_exists_and_not_empty(&legacy) {
+        return false;
+    }
+    store.import(&artifact, &legacy).is_ok()
 }
 
 /// Map a datastore error into the workspace error type.
@@ -530,35 +551,38 @@ mod tests {
         assert!(err.to_string().contains("declares 1875"), "{err}");
     }
 
-    #[test]
-    fn a_pre_seam_cached_file_is_adopted_offline() {
-        // The regression this guards: moving to the datastore changed where
-        // products live on disk. A user who already had the file must not
-        // re-download it, and an OFFLINE user must still be able to load it.
-        //
-        // Uses the embedded 1995low bytes as a stand-in for a legacy download,
-        // so the test is real data and needs no network.
-        let cache = tempfile::tempdir().unwrap();
-        let legacy_dir = cache.path().join(LEGACY_CACHE_SUBDIR);
-        std::fs::create_dir_all(&legacy_dir).unwrap();
-        let legacy = legacy_dir.join(Product::Low1995.file_name());
-        std::fs::write(&legacy, EMBEDDED_LOW_1995).unwrap();
-
-        // Offline and mirrorless: if adoption does not happen, resolution has
-        // nowhere to go and this fails.
-        let store_root = tempfile::tempdir().unwrap();
-        let store = Datastore::builder()
-            .cache_root(store_root.path().to_path_buf())
+    /// An offline, mirrorless store: resolution has nowhere to go, so anything
+    /// that succeeds against it did so from the local cache.
+    fn offline_store(root: &std::path::Path) -> Datastore {
+        Datastore::builder()
+            .cache_root(root.to_path_buf())
             .without_mirror()
             .offline(true)
             .build()
-            .unwrap();
+            .unwrap()
+    }
 
+    #[test]
+    fn adoption_imports_a_pre_seam_file_and_download_with_then_finds_it() {
+        // Exercises adopt_legacy_cache_from itself, not the store's import:
+        // delete the helper or point it at the wrong filename and this fails.
+        let legacy_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            legacy_dir.path().join(Product::Low1995.file_name()),
+            EMBEDDED_LOW_1995,
+        )
+        .unwrap();
+
+        let store_root = tempfile::tempdir().unwrap();
+        let store = offline_store(store_root.path());
         let artifact = Product::Low1995.artifact();
-        assert!(!store.contains(&artifact.key));
-        store
-            .import(&artifact, &legacy)
-            .expect("import legacy file");
+        assert!(!store.contains(&artifact.key), "store must start empty");
+
+        assert!(adopt_legacy_cache_from(
+            &store,
+            Product::Low1995,
+            legacy_dir.path()
+        ));
         assert!(store.contains(&artifact.key));
 
         let table = KarkoschkaTable::download_with(&store, Product::Low1995).unwrap();
@@ -566,23 +590,57 @@ mod tests {
     }
 
     #[test]
-    fn import_rejects_a_corrupt_legacy_file() {
-        // Adoption runs the content check, so a truncated or wrong-kind legacy
-        // file is refused rather than promoted into the store. An HTML body is
-        // the realistic case: a login page saved under a data filename by an
-        // older, unvalidated downloader.
+    fn adoption_refuses_a_corrupt_pre_seam_file() {
+        // An HTML body under a data filename is the realistic corruption: a
+        // login page saved by the older, unvalidated downloader. It must not be
+        // promoted into the store.
+        let legacy_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            legacy_dir.path().join(Product::Low1995.file_name()),
+            "<!DOCTYPE html><html><body>login</body></html>",
+        )
+        .unwrap();
+
         let store_root = tempfile::tempdir().unwrap();
-        let store = Datastore::builder()
-            .cache_root(store_root.path().to_path_buf())
-            .without_mirror()
-            .offline(true)
-            .build()
-            .unwrap();
-        let bad = store_root.path().join("bad.tab");
-        std::fs::write(&bad, "<!DOCTYPE html><html><body>login</body></html>").unwrap();
-        let artifact = Product::Low1995.artifact();
-        assert!(store.import(&artifact, &bad).is_err());
-        assert!(!store.contains(&artifact.key));
+        let store = offline_store(store_root.path());
+        assert!(!adopt_legacy_cache_from(
+            &store,
+            Product::Low1995,
+            legacy_dir.path()
+        ));
+        assert!(!store.contains(&Product::Low1995.artifact().key));
+    }
+
+    #[test]
+    fn adoption_is_a_no_op_when_there_is_nothing_to_adopt() {
+        let empty = tempfile::tempdir().unwrap();
+        let store_root = tempfile::tempdir().unwrap();
+        let store = offline_store(store_root.path());
+        assert!(!adopt_legacy_cache_from(
+            &store,
+            Product::Low1995,
+            empty.path()
+        ));
+    }
+
+    #[test]
+    fn download_with_is_hermetic() {
+        // The regression that matters most here: download_with must resolve
+        // through the given store and nowhere else. A cold canary store has to
+        // stay cold, or a stale file on the developer's disk satisfies a test
+        // whose entire purpose is to contact the archive.
+        //
+        // A legacy file exists, and is deliberately NOT adopted; against an
+        // offline empty store the resolve must fail.
+        let legacy_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            legacy_dir.path().join(Product::Low1995.file_name()),
+            EMBEDDED_LOW_1995,
+        )
+        .unwrap();
+        let store_root = tempfile::tempdir().unwrap();
+        let store = offline_store(store_root.path());
+        assert!(KarkoschkaTable::download_with(&store, Product::Low1995).is_err());
     }
 
     #[test]
