@@ -1,5 +1,7 @@
 //! Sampled spectral albedo and its accessors.
 
+use starfield_datasource_utils::SampledCurve;
+
 use crate::body::SpectralBody;
 
 /// What a tabulated albedo actually measures.
@@ -39,8 +41,7 @@ pub struct SpectralAlbedo {
     body: SpectralBody,
     kind: AlbedoKind,
     source: &'static str,
-    wavelengths_nm: Vec<f64>,
-    albedo: Vec<f64>,
+    curve: SampledCurve,
 }
 
 impl SpectralAlbedo {
@@ -57,25 +58,28 @@ impl SpectralAlbedo {
         wavelengths_nm: Vec<f64>,
         albedo: Vec<f64>,
     ) -> Self {
-        assert_eq!(
-            wavelengths_nm.len(),
-            albedo.len(),
-            "wavelength and albedo arrays must be the same length"
-        );
-        assert!(
-            !wavelengths_nm.is_empty(),
-            "spectral albedo must have at least one sample"
-        );
-        assert!(
-            wavelengths_nm.windows(2).all(|w| w[0] < w[1]),
-            "wavelengths must be strictly ascending"
-        );
+        let curve = SampledCurve::new(wavelengths_nm, albedo)
+            .unwrap_or_else(|e| panic!("invalid spectral albedo for {}: {e}", body.name()));
         Self {
             body,
             kind,
             source,
-            wavelengths_nm,
-            albedo,
+            curve,
+        }
+    }
+
+    /// Build from an already-validated curve.
+    pub fn from_curve(
+        body: SpectralBody,
+        kind: AlbedoKind,
+        source: &'static str,
+        curve: SampledCurve,
+    ) -> Self {
+        Self {
+            body,
+            kind,
+            source,
+            curve,
         }
     }
 
@@ -94,9 +98,15 @@ impl SpectralAlbedo {
         self.source
     }
 
+    /// The underlying sampled curve, for consumers that want to share one
+    /// integration path across albedos, reflectances and the solar spectrum.
+    pub fn curve(&self) -> &SampledCurve {
+        &self.curve
+    }
+
     /// Number of samples.
     pub fn len(&self) -> usize {
-        self.wavelengths_nm.len()
+        self.curve.len()
     }
 
     /// Always false — construction rejects empty spectra.
@@ -106,18 +116,12 @@ impl SpectralAlbedo {
 
     /// Inclusive wavelength bounds, in nanometres.
     pub fn range_nm(&self) -> (f64, f64) {
-        (
-            self.wavelengths_nm[0],
-            self.wavelengths_nm[self.wavelengths_nm.len() - 1],
-        )
+        self.curve.range_nm()
     }
 
     /// The raw samples, as `(wavelength_nm, albedo)` pairs.
     pub fn samples(&self) -> impl Iterator<Item = (f64, f64)> + '_ {
-        self.wavelengths_nm
-            .iter()
-            .copied()
-            .zip(self.albedo.iter().copied())
+        self.curve.samples()
     }
 
     /// Albedo at `nm`, linearly interpolated between samples.
@@ -127,19 +131,7 @@ impl SpectralAlbedo {
     /// measured range is a real problem for the caller to handle, not something
     /// to paper over with the edge value.
     pub fn at_nm(&self, nm: f64) -> Option<f64> {
-        let (lo, hi) = self.range_nm();
-        if !(lo..=hi).contains(&nm) {
-            return None;
-        }
-        // partition_point gives the count of samples strictly below `nm`.
-        let idx = self.wavelengths_nm.partition_point(|&w| w < nm);
-        if self.wavelengths_nm[idx] == nm {
-            return Some(self.albedo[idx]);
-        }
-        let (w0, w1) = (self.wavelengths_nm[idx - 1], self.wavelengths_nm[idx]);
-        let (a0, a1) = (self.albedo[idx - 1], self.albedo[idx]);
-        let t = (nm - w0) / (w1 - w0);
-        Some(a0 + t * (a1 - a0))
+        self.curve.at(nm)
     }
 
     /// Mean albedo over `[lo_nm, hi_nm]`, weighted by wavelength.
@@ -155,30 +147,7 @@ impl SpectralAlbedo {
     /// efficiency curve should iterate [`SpectralAlbedo::samples`] and do their
     /// own weighted integral.
     pub fn mean_over(&self, lo_nm: f64, hi_nm: f64) -> Option<f64> {
-        // The is_finite guards also reject NaN bounds, which would otherwise
-        // slip past the ordering comparison below.
-        if !lo_nm.is_finite() || !hi_nm.is_finite() || lo_nm >= hi_nm {
-            return None;
-        }
-        let (min, max) = self.range_nm();
-        if lo_nm < min || hi_nm > max {
-            return None;
-        }
-
-        let mut integral = 0.0;
-        for i in 0..self.wavelengths_nm.len() - 1 {
-            let (w0, w1) = (self.wavelengths_nm[i], self.wavelengths_nm[i + 1]);
-            let a = w0.max(lo_nm);
-            let b = w1.min(hi_nm);
-            if a >= b {
-                continue;
-            }
-            // Exact for a linear segment: mean of the endpoint values times width.
-            let fa = self.at_nm(a)?;
-            let fb = self.at_nm(b)?;
-            integral += 0.5 * (fa + fb) * (b - a);
-        }
-        Some(integral / (hi_nm - lo_nm))
+        self.curve.mean_over(lo_nm, hi_nm)
     }
 }
 
@@ -264,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "same length")]
+    #[should_panic(expected = "wavelengths but")]
     fn construction_rejects_mismatched_lengths() {
         SpectralAlbedo::new(
             SpectralBody::Jupiter,
