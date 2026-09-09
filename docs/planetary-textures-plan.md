@@ -31,8 +31,8 @@ Checked against the working trees, not from memory:
 | Area | State | Consequence |
 |---|---|---|
 | `starfield::planetlib::Body` | 11 bodies (8 planets, Sun, Moon, Pluto); `name()`, `naif_id()`, `radii_km()`, `flattening()`, `rotational_elements()` | **No moons besides Luna.** This plan needs its own body identifier keyed on NAIF id. |
-| `starfield::planetarylib` | landed: `text_pck`, embedded `iau2015.csv`, `RotationalElements` | Body-fixed frames exist; map registration has something to register *to*. |
-| `starfield::planetarylib::geometry` | planned, not landed (PR 11/12 of the starfield plan) | Sub-observer points are the map-sampling entry point. This repo must not block on them. |
+| `starfield::planetarylib` | starfield 0.15: `text_pck`, `iau2015.csv`, `RotationalElements`, `IauFrame`, `PckFrame` | Body-fixed rotation is done. Map registration has something to register *to*. |
+| `starfield::planetarylib::geometry` | **not landed** — no `sub_observer_point`, `apparent_ellipse` or `angular_semi_diameter` anywhere in the tree | Hard blocker for *sampling* a map: without a sub-observer point there is no way to know which part of the map faces the observer. This repo must not block on it, but PR 5 cannot be demonstrated end-to-end until it lands. |
 | `focalplane::photometry::Spectrum` | trait: `spectral_irradiance(Wavelength) -> f64` (erg s⁻¹ cm⁻² Hz⁻¹), `irradiance(&Band)` | An albedo is *not* a spectrum — it is dimensionless. See §2.3. |
 | `focalplane` deps | pulls `starfield-gaia`, `starfield-nsa`, `starfield-datasource-utils` by git rev | Dependency runs focalplane → datasources. **Nothing here may depend on focalplane.** |
 | `starfield-datasource-utils` | `cache_dir`, `ensure_cache_subdir`, `download_to_file`, `build_http_client` | Reuse for every downloading crate here. |
@@ -232,18 +232,72 @@ pinned table of (body, product, URL, checksum) rather than querying at runtime.
 Pinning is the right call for a data source anyway: reproducibility beats
 freshness.
 
-Confirmed products:
+Confirmed products — URL and size verified by fetch:
 
-| Body | Product | Notes |
+| Body | Product | Size |
 |---|---|---|
 | Moon | `Lunar_LRO_LROC-WAC_Mosaic_global_100m_June2013.tif` | 5.96 GB, monochrome 643 nm |
+| Mars | `Mars_Viking_ClrMosaic_global_925m.tif` | 0.74 GB, colour |
+| Mars | `Mars_Viking_MDIM21_ClrMosaic_global_232m.tif` | 11.87 GB, colour |
+| Ganymede | `Ganymede_Voyager_GalileoSSI_Global_ClrMosaic_1435m.tif` | colour |
+| Callisto | `Callisto_Voyager_GalileoSSI_global_mosaic_1km.tif` | monochrome |
 | Mercury | MESSENGER MDIS basemap, 665 m; MD3 colour (1000/750/430 nm → RGB) | MD3 is the one with real spectral meaning |
-| Mars | Viking MDIM colour; MOLA shaded relief | |
 | Earth | Blue Marble / MODIS | |
 
-Moons are the sparse case: Galilean coverage exists from Voyager/Galileo, the
-mid-size Saturnians from Cassini ISS, Triton from Voyager 2 (one hemisphere
-only). Coverage is body-by-body and is the subject of PR 5's survey.
+Product slugs cannot be guessed — `astrogeology.usgs.gov` returns HTTP 200 with a
+generic catalog page for an unknown slug, so a wrong slug looks like a hit. Treat
+"the page has a `planetarymaps.usgs.gov` link" as the existence test.
+
+**Jupiter has no controlled global mosaic** in this catalog, and will not: there is
+no solid surface to control a photogrammetric network to. See §3.5.
+
+Moons are otherwise the sparse case: the Galileans are covered from
+Voyager/Galileo, the mid-size Saturnians from Cassini ISS, Triton from Voyager 2
+(one hemisphere only). Coverage is body-by-body and is the subject of PR 5's
+survey.
+
+### 3.5 Time-variable features — a static map is not enough
+
+A map is a fixed property of the body only where the surface is fixed. For the
+Moon, Mercury, Callisto and Ganymede that holds. For the two features most likely
+to be asked for by name, it does not, and baking them into a texture produces
+something confidently wrong rather than merely coarse.
+
+**Jupiter's Great Red Spot drifts.** Its longitude in System III moves at roughly
+0.36°/day — 13–16° per year, and the rate has been accelerating since the 1980s.
+A texture with the GRS painted in is wrong by a visible fraction of the disk
+within weeks and by a hemisphere within a decade. Jupiter's belts and zones also
+reorganise on multi-year timescales.
+
+**Mars' polar caps are seasonal, by a very large amount.** The southern seasonal
+CO₂ cap reaches roughly −40° latitude at maximum extent (Ls ≈ 80–90°) and has
+essentially sublimated away by Ls ≈ 320–330°. That is a swing of order 50° of
+latitude over one Mars year. Any static mosaic bakes in whatever cap extent
+happened to exist when its source frames were taken, so the caps are wrong for
+most of the year — including, usually, being present when they should be absent.
+
+Both therefore become **parametric overlays on top of the base map**, not part of
+it:
+
+```rust
+/// Evaluated at observation time and composited over the base albedo map.
+pub trait TimeVariableFeature {
+    fn contribution(&self, lon_rad: f64, lat_rad: f64, t: &Time) -> Option<f64>;
+}
+```
+
+- Mars seasonal caps: cap edge latitude as a function of solar longitude Ls, per
+  hemisphere, from the MARCI/MOC recession literature. Ls is a `starfield`
+  ephemeris quantity, so this needs no new geometry.
+- Jupiter GRS: centre longitude from a System III drift model with an epoch, plus
+  a size that has itself been shrinking. Needs the drift refit periodically, so
+  the model carries its fit epoch and validity window and refuses to extrapolate
+  far outside it — the same discipline `SpectralAlbedo` applies to wavelength.
+
+This is new scope relative to the original PR list. It lands as **PR 5b (Mars
+seasonal caps)** and **PR 7b (Jupiter GRS and belt model)**, each depending on
+the map framework in PR 5. Neither blocks the static-surface bodies, which is
+the argument for keeping the base-map path free of any time dependence.
 
 ### 3.4 Making colour vary across the disk
 
