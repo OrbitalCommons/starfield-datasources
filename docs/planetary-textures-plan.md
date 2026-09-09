@@ -38,6 +38,43 @@ names, with one real disagreement resolved in their favour:
 | D1.4 SHA-256 helper in `datasource-utils` | *was absent* | Adopted; lands with PR 5, which is what needs it. |
 | *(not on their list)* | `starfield-planet-spectra` | Their D1.2 endmember list is entirely rocky/Earth surfaces, but their F3.7 renders the gas giants. Karkoschka fills that gap. |
 
+### Settled interface contract
+
+Agreed with focalplane and not to be re-litigated without telling them:
+
+- **Map sampling input is east-positive planetocentric radians**, row 0 = north.
+  Every archive convention is converted *inside* the map (§2.2). focalplane calls
+  `sub_observer_point(..).to_planetocentric(radii).lon_rad` and applies no
+  `LongitudeSense`.
+- **`sample_area(lon_rad, lat_rad, sky_radius_rad, mu, epoch: Option<&Time>)`**
+  returns a composited `EndmemberMix`. The caller passes the **sky** footprint
+  and the emission cosine *separately*; the map does the projection.
+
+  This was the one design disagreement. focalplane initially offered to pass the
+  already-foreshortened surface footprint (`sky_radius / mu`). Rejected because
+  1/μ is singular at the limb — so the clamp policy is inseparable from mip-level
+  selection and must live in one place — and because foreshortening is
+  *anisotropic*: dividing a scalar radius by μ inflates both axes, giving correct
+  sharpness along the stretched direction and heavy over-blur across it, smearing
+  along the limb exactly where a terminator test looks. Passing the full local
+  Jacobian is strictly more information and stays available if the
+  ellipsoid-vs-sphere difference turns out to matter at Jupiter's or Saturn's
+  limb; not built until it does.
+- **Sampling scale.** Disks are 30–400 px against mosaics of 100 m–1 km, i.e.
+  10³–10⁶ texels per pixel. Point sampling would alias badly. Default embedded
+  tier is ~0.1°/px (~4 km at the Mars equator); `sample_area` is backed by a mip
+  pyramid whose level-selection rule is documented and whose chosen level is
+  **exposed**, so the consumer can assert on it.
+- **Always return `EndmemberMix`**, never a bare scalar; a uniform albedo is a
+  one-endmember mix. Endmember ids are a stable enum shared between the map and
+  reflectance crates.
+- **Bodies are keyed on NAIF id** at the crate boundary, both sides.
+- **`f_nu_cgs_at_nm` stays here; the `Spectrum` impl stays in focalplane.** The
+  unit change is not radiometry, so the factor is written once in the crate that
+  owns the units; the trait impl would invert the dependency. λ² is applied at the
+  *requested* wavelength, not the bin centre — the box mean is a statement about
+  F_λ and the λ² is exact.
+
 ## 1. What exists today
 
 Checked against the working trees, not from memory:
