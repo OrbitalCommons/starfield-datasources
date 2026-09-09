@@ -69,6 +69,12 @@ Agreed with focalplane and not to be re-litigated without telling them:
   one-endmember mix. Endmember ids are a stable enum shared between the map and
   reflectance crates.
 - **Bodies are keyed on NAIF id** at the crate boundary, both sides.
+- **Frames come from `frame_for`, on starfield 0.16.1 or later.** `frame_for(399)`
+  gives `ItrsFrame` and `frame_for(301)` gives `PckFrame` when a Moon PA segment
+  is loaded (DE440 preferred over DE421), matching what Horizons uses — ITRF93
+  for Earth, MOON_ME for the Moon. Everything else falls back to the embedded
+  IAU 2015 table, so the kernel-free path works offline. **0.16.0 does not have
+  that fallback** and returns `DataError` for a body with no text kernel loaded.
 - **`f_nu_cgs_at_nm` stays here; the `Spectrum` impl stays in focalplane.** The
   unit change is not radiometry, so the factor is written once in the crate that
   owns the units; the trait impl would invert the dependency. λ² is applied at the
@@ -82,7 +88,8 @@ Checked against the working trees, not from memory:
 | Area | State | Consequence |
 |---|---|---|
 | `starfield::planetlib::Body` | 11 bodies (8 planets, Sun, Moon, Pluto); `name()`, `naif_id()`, `radii_km()`, `flattening()`, `rotational_elements()` | **No moons besides Luna.** This plan needs its own body identifier keyed on NAIF id. |
-| `starfield::planetarylib` | starfield 0.15: `text_pck`, `iau2015.csv`, `RotationalElements`, `IauFrame`, `PckFrame` | Body-fixed rotation is done. Map registration has something to register *to*. |
+| `starfield::planetarylib` | starfield 0.16.1: `text_pck`, `iau2015.csv`, `RotationalElements`, `IauFrame`, `PckFrame` | Body-fixed rotation is done. Map registration has something to register *to*. |
+| `PlanetaryConstants::frame_for` | **0.16.1 or later required.** In 0.16.0 it returned `DataError` for any body with no text kernel loaded; since 0.16.1 it falls back to the embedded IAU 2015 table, with kernel values winning once read. | The convenience constructor the map path uses. On 0.16.0 the kernel-free call for Mars fails, and `IauFrame::from_naif_id(499)` was the workaround. Do not pin below 0.16.1. |
 | `Position::angular_semi_diameter`, `Position::apparent_ellipse` | landed on starfield `main` at `93608df` (#182), in `src/positions/angular_size.rs` — **after** the 0.15.0 tag, so absent from a 0.15 checkout | Verified against `origin/main`. Grep the tag and you will wrongly conclude this is missing. |
 | `planetarylib::occult` | landed on `main` (#182) | `Occultation::{None, Partial, Full}`. |
 | `Position::sub_observer_point` / `sub_solar_point` | landing on `main` today (#187), `src/planetarylib/subpoint.rs` | The map-sampling entry point. Was the hard blocker for PR 5; no longer is. |

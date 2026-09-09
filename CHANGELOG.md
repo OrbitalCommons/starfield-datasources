@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.13.0 — Planetary albedo maps
+
+### starfield-planet-maps 0.1.0 (new)
+
+focalplane D1.3. The spatial half of resolved-body appearance: where the light
+comes from on the disk.
+
+- `MapGrid` stores each product's longitude sense, latitude definition, `lon0`
+  and row order as data and converts internally. Callers pass east-positive
+  planetocentric radians — what `SubPoint::to_planetocentric` gives — and never
+  convert. A map registered with the wrong handedness is mirrored, and a
+  mirrored Mars looks plausible until checked against an ephemeris
+- Landmark tests name real features rather than checking algebra, because the
+  algebra is symmetric under exactly that error: Olympus Mons and Tycho must
+  land on specific pixels
+- `AlbedoMap` with a box-filtered mip pyramid; `sample_area` takes the **sky**
+  footprint and the emission cosine separately and does the projection
+  internally, so the `1/mu` clamp and the level choice stay together
+- `MU_FLOOR` bounds the limb singularity at cos 87°; `SampleFootprint` exposes
+  the chosen level, the footprint in texels, the anisotropy and whether the
+  clamp fired, so a consumer can assert on terminator behaviour
+- Level selection uses the stretched axis: never aliases, over-blurs across the
+  minor axis near the limb. True anisotropic filtering is a follow-up rather
+  than something faked with a scalar level
+- `PhotometricBand` is required, not optional. A scalar mosaic is a reflectance
+  *in some band*, and converting it to an `EndmemberMix` is only defined against
+  that band
+- `PRODUCTS` is a pinned catalogue — USGS's CKAN endpoint returns HTML, not
+  JSON, so there is no discovery API, and pinning is right for a data source
+  anyway. Five products, URLs and sizes verified by fetch
+- Jupiter is deliberately absent and `require_product_for` says so: USGS has no
+  controlled global mosaic for it and will not, since there is no solid surface
+  to control a photogrammetric network to
+
+### Facade crate
+
+- New `planet-maps` feature (not default)
+
 ## 0.12.0 — Endmember reflectance library
 
 ### starfield-reflectance-library 0.1.0 (new)

@@ -87,11 +87,48 @@ pub enum Endmember {
     FreshBasalt,
     /// Weathered basalt.
     WeatheredBasalt,
+    /// Dried playa mud — the reddened arid surface for barren terrain.
+    ///
+    /// Iron-oxide reddening makes arid soil markedly redder than beach sand:
+    /// its 700/450 nm ratio is 2.1 against Sand's 1.5. Barren terrain is a
+    /// large fraction of Earth's illuminated disk, so using quartz beach sand
+    /// there would bias the integrated colour blue.
+    ///
+    /// splib07 has **no bulk desert-soil spectrum** — its soils chapter is
+    /// mineral mixtures, and the entries that redden more strongly are pure
+    /// minerals rather than field-collected surfaces. This is a real arid field
+    /// sample and is the closest honest choice in this archive.
+    AridSoil,
+    /// Old black asphalt road — the dark half of an urban surface.
+    Asphalt,
+    /// Photometric shade: identically zero reflectance at every wavelength.
+    ///
+    /// The standard shade endmember of spectral mixture analysis, and the only
+    /// synthetic member of this enum — it has no laboratory spectrum because it
+    /// is not a material. It accounts for sub-texel structure that removes light
+    /// without changing its colour: canopy shadowing, gaps, and multiple
+    /// scattering into the surface.
+    ///
+    /// It is not a nicety. splib07's vegetation spectra are **leaf-level**, and
+    /// a leaf is far brighter than a canopy: pure [`Endmember::GreenVegetation`]
+    /// integrates to a shortwave albedo of 0.218, while published forest
+    /// class-means are 0.10–0.15. Without a shade component the vegetated
+    /// surfaces of Earth cannot be made to match measured albedos at all.
+    ///
+    /// Because its reflectance is zero everywhere, it has no wavelength range
+    /// of its own and never restricts a band a mix can be evaluated over.
+    Shade,
+    /// Light grey concrete road — the bright half of an urban surface.
+    ///
+    /// Urban land cover is strongly bimodal in brightness, so asphalt and
+    /// concrete are separate endmembers rather than one "urban" average that
+    /// would represent neither.
+    Concrete,
 }
 
 impl Endmember {
     /// Every endmember in the library.
-    pub const ALL: [Endmember; 9] = [
+    pub const ALL: [Endmember; 13] = [
         Endmember::OpenOcean,
         Endmember::CoastalWater,
         Endmember::GreenVegetation,
@@ -101,6 +138,10 @@ impl Endmember {
         Endmember::WaterIce,
         Endmember::FreshBasalt,
         Endmember::WeatheredBasalt,
+        Endmember::AridSoil,
+        Endmember::Asphalt,
+        Endmember::Concrete,
+        Endmember::Shade,
     ];
 
     /// The identifier used in the embedded table and on the wire.
@@ -115,6 +156,10 @@ impl Endmember {
             Endmember::WaterIce => "WaterIce",
             Endmember::FreshBasalt => "FreshBasalt",
             Endmember::WeatheredBasalt => "WeatheredBasalt",
+            Endmember::AridSoil => "AridSoil",
+            Endmember::Shade => "Shade",
+            Endmember::Asphalt => "Asphalt",
+            Endmember::Concrete => "Concrete",
         }
     }
 
@@ -230,6 +275,24 @@ impl ReflectanceLibrary {
             let curve = SampledCurve::new(wavelengths, values)
                 .map_err(|e| StarfieldError::DataError(format!("{}: {e}", endmember.id())))?;
             spectra.insert(endmember, Reflectance { endmember, curve });
+        }
+
+        // Shade is synthetic: identically zero, spanning every wavelength any
+        // real endmember covers, so it never narrows a mix's usable range.
+        let (lo, hi) = spectra.values().fold((f64::MAX, f64::MIN), |(lo, hi), r| {
+            let (a, b) = r.range_nm();
+            (lo.min(a), hi.max(b))
+        });
+        if lo < hi {
+            let curve = SampledCurve::new(vec![lo, hi], vec![0.0, 0.0])
+                .map_err(|e| StarfieldError::DataError(format!("Shade: {e}")))?;
+            spectra.insert(
+                Endmember::Shade,
+                Reflectance {
+                    endmember: Endmember::Shade,
+                    curve,
+                },
+            );
         }
 
         if spectra.is_empty() {
@@ -414,6 +477,76 @@ mod tests {
             );
         }
         assert!(ocean.at_nm(450.0).unwrap() > ocean.at_nm(650.0).unwrap());
+    }
+
+    #[test]
+    fn shade_is_zero_everywhere_and_never_narrows_a_band() {
+        let l = library();
+        let shade = l.get(Endmember::Shade).unwrap();
+        for nm in [400.0, 550.0, 900.0, 2000.0] {
+            assert_eq!(shade.at_nm(nm), Some(0.0), "at {nm} nm");
+        }
+        assert_eq!(shade.band_mean(400.0, 900.0), Some(0.0));
+        // It spans at least as wide as any real endmember, so mixing it in
+        // cannot make an otherwise-evaluable band return None.
+        let (slo, shi) = shade.range_nm();
+        for e in Endmember::ALL {
+            let (lo, hi) = l.get(e).unwrap().range_nm();
+            assert!(slo <= lo && shi >= hi, "{} exceeds Shade's range", e.id());
+        }
+    }
+
+    #[test]
+    fn shade_darkens_a_canopy_to_a_published_albedo() {
+        // The reason Shade exists: leaf-level spectra are far brighter than
+        // canopies. Pure green vegetation is well above published forest
+        // class-means; 55/45 with shade lands inside them.
+        let l = library();
+        let leaf_only = EndmemberMix::uniform(Endmember::GreenVegetation);
+        let canopy = EndmemberMix::new(vec![
+            (Endmember::GreenVegetation, 0.55),
+            (Endmember::Shade, 0.45),
+        ]);
+        let bare = leaf_only.band_mean(&l, 700.0, 900.0).unwrap();
+        let shaded = canopy.band_mean(&l, 700.0, 900.0).unwrap();
+        assert!((shaded - 0.55 * bare).abs() < 1e-12);
+        assert!(shaded < bare);
+    }
+
+    #[test]
+    fn arid_soil_is_redder_than_beach_sand() {
+        // The distinction that matters for Earth's integrated colour: barren
+        // terrain is iron-oxide reddened, beach quartz sand is not, and barren
+        // is a large fraction of the illuminated disk.
+        let l = library();
+        let arid = l.get(Endmember::AridSoil).unwrap();
+        let sand = l.get(Endmember::Sand).unwrap();
+        let arid_slope = arid.at_nm(700.0).unwrap() / arid.at_nm(450.0).unwrap();
+        let sand_slope = sand.at_nm(700.0).unwrap() / sand.at_nm(450.0).unwrap();
+        assert!(
+            arid_slope > 1.3 * sand_slope,
+            "arid {arid_slope} vs sand {sand_slope}"
+        );
+        assert!(arid_slope > 2.0, "arid soil slope {arid_slope}");
+    }
+
+    #[test]
+    fn urban_endmembers_bracket_a_real_city_in_brightness() {
+        // Urban cover is bimodal: asphalt is among the darkest natural or
+        // artificial surfaces, concrete among the brighter. Averaging them into
+        // one "urban" endmember would represent neither, which is why they are
+        // separate.
+        let l = library();
+        let asphalt = l.get(Endmember::Asphalt).unwrap().at_nm(600.0).unwrap();
+        let concrete = l.get(Endmember::Concrete).unwrap().at_nm(600.0).unwrap();
+        assert!(asphalt < 0.15, "asphalt reflectance {asphalt}");
+        assert!(concrete > 2.0 * asphalt, "{concrete} vs {asphalt}");
+        // Both are spectrally flatter than vegetation: no red edge.
+        for e in [Endmember::Asphalt, Endmember::Concrete] {
+            let r = l.get(e).unwrap();
+            let edge = r.at_nm(750.0).unwrap() / r.at_nm(680.0).unwrap();
+            assert!(edge < 1.5, "{} has a red edge: {edge}", e.id());
+        }
     }
 
     #[test]

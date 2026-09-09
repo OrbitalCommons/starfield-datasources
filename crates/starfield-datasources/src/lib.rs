@@ -16,6 +16,7 @@
 //! - `mpc` — Minor Planet Center client (MPCORB, observatory codes, observations)
 //! - `nsa` — NASA-Sloan Atlas (NSA) galaxy catalog loader
 //! - `planet-spectra` — spectral geometric albedos of the giant planets and Titan (Karkoschka / PDS)
+//! - `planet-maps` — equirectangular albedo maps in body-fixed coordinates (USGS mosaics)
 //! - `reflectance-library` — endmember surface reflectance spectra (USGS splib07)
 //! - `solar-spectrum` — TSIS-1 HSRS v2 solar reference spectrum at 1 nm
 //! - `rubin` — Vera C. Rubin Observatory LSST alert broker clients
@@ -49,6 +50,9 @@ pub use starfield_nsa as nsa;
 
 #[cfg(feature = "planet-spectra")]
 pub use starfield_planet_spectra as planet_spectra;
+
+#[cfg(feature = "planet-maps")]
+pub use starfield_planet_maps as planet_maps;
 
 #[cfg(feature = "reflectance-library")]
 pub use starfield_reflectance_library as reflectance_library;
