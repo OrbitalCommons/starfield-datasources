@@ -18,6 +18,7 @@ use starfield::{Result, StarfieldError};
 use starfield_reflectance_library::{Endmember, EndmemberMix};
 
 use crate::grid::{Latitude, Longitude, MapGrid, RowOrder};
+use crate::map::{SampleFootprint, SurfaceSampler, MU_FLOOR};
 
 /// Format magic. Bump on any layout change.
 const MAGIC: &[u8] = b"SFEMv2\n";
@@ -42,7 +43,15 @@ pub struct AbundanceTier {
     registration: Registration,
     naif_id: i32,
     provenance: String,
-    /// Plane-major: `planes[e * width * height + row * width + col]`, 255 = 1.0.
+    /// Mip pyramid. Level 0 is full resolution; each level is plane-major,
+    /// `planes[e * w * h + row * w + col]`, 255 = abundance 1.0.
+    levels: Vec<TierLevel>,
+}
+
+#[derive(Debug, Clone)]
+struct TierLevel {
+    width: usize,
+    height: usize,
     planes: Vec<u8>,
 }
 
@@ -165,7 +174,11 @@ impl AbundanceTier {
             },
             naif_id,
             provenance,
-            planes,
+            levels: build_pyramid(TierLevel {
+                width,
+                height,
+                planes,
+            }),
         })
     }
 
@@ -199,30 +212,90 @@ impl AbundanceTier {
         &self.provenance
     }
 
-    /// Abundance of plane `e` at `(col, row)`, in `[0, 1]`.
-    fn plane_at(&self, e: usize, col: usize, row: usize) -> f64 {
-        self.planes[e * self.width * self.height + row * self.width + col] as f64 / 255.0
+    /// Number of pyramid levels.
+    pub fn levels(&self) -> usize {
+        self.levels.len()
     }
 
-    /// Composition at a body-fixed position, nearest texel.
+    /// Abundance of plane `e` at `(col, row)` of `level`, in `[0, 1]`.
+    fn plane_at(&self, level: usize, e: usize, col: usize, row: usize) -> f64 {
+        let l = &self.levels[level];
+        l.planes[e * l.width * l.height + row * l.width + col] as f64 / 255.0
+    }
+
+    /// Mix at a texel of a given level.
+    fn mix_at(&self, level: usize, u: f64, v: f64) -> EndmemberMix {
+        let l = &self.levels[level];
+        let col = ((u * l.width as f64) as usize).min(l.width - 1);
+        let row = ((v * l.height as f64) as usize).min(l.height - 1);
+        let mut weights = Vec::new();
+        for (e, &endmember) in self.endmembers.iter().enumerate() {
+            let w = self.plane_at(level, e, col, row);
+            if w > 0.0 {
+                weights.push((endmember, w));
+            }
+        }
+        EndmemberMix::new(weights)
+    }
+
+    /// Choose a pyramid level for a sky footprint at emission cosine `mu`.
+    ///
+    /// Identical policy to [`crate::AlbedoMap::select_level`]: select from the
+    /// stretched axis, clamp `mu` at [`MU_FLOOR`], never alias. Sharing the
+    /// policy matters — a body with a tier and a body with a scalar map must
+    /// not blur differently at the same geometry.
+    pub fn select_level(&self, sky_radius_rad: f64, mu: f64) -> Option<SampleFootprint> {
+        if !sky_radius_rad.is_finite() || sky_radius_rad <= 0.0 || !mu.is_finite() {
+            return None;
+        }
+        let mu_clamped = mu < MU_FLOOR;
+        let mu_eff = mu.max(MU_FLOOR);
+        if mu_eff > 1.0 {
+            return None;
+        }
+        let texels_per_rad = self.width as f64 / (2.0 * std::f64::consts::PI);
+        let texels = sky_radius_rad / mu_eff * texels_per_rad;
+        let level = if texels <= 1.0 {
+            0
+        } else {
+            (texels.log2().floor() as usize).min(self.levels.len() - 1)
+        };
+        Some(SampleFootprint {
+            level,
+            texels,
+            anisotropy: 1.0 / mu_eff,
+            mu_clamped,
+        })
+    }
+
+    /// Composition at a body-fixed position, full resolution, nearest texel.
     ///
     /// Input is **east-positive planetocentric radians**, as everywhere else in
     /// this crate; the header's conventions are applied internally.
     ///
     /// Endmembers with zero abundance are omitted, so a mix over open ocean has
-    /// one entry rather than nine.
+    /// one entry rather than nine. Use [`AbundanceTier::sample_area`] unless the
+    /// footprint is known to be sub-texel.
     pub fn sample(&self, lon_rad: f64, lat_rad: f64) -> Option<EndmemberMix> {
         let (u, v) = self.grid.body_fixed_to_uv(lon_rad, lat_rad)?;
-        let col = ((u * self.width as f64) as usize).min(self.width - 1);
-        let row = ((v * self.height as f64) as usize).min(self.height - 1);
-        let mut weights = Vec::new();
-        for (e, &endmember) in self.endmembers.iter().enumerate() {
-            let w = self.plane_at(e, col, row);
-            if w > 0.0 {
-                weights.push((endmember, w));
-            }
-        }
-        Some(EndmemberMix::new(weights))
+        Some(self.mix_at(0, u, v))
+    }
+
+    /// Composition over a footprint, with the resolution level chosen from it.
+    ///
+    /// The tier equivalent of [`crate::AlbedoMap::sample_area`], and the reason
+    /// both implement [`SurfaceSampler`]: a consumer should not branch on
+    /// whether a body happens to have real composition data.
+    pub fn sample_area(
+        &self,
+        lon_rad: f64,
+        lat_rad: f64,
+        sky_radius_rad: f64,
+        mu: f64,
+    ) -> Option<(EndmemberMix, SampleFootprint)> {
+        let (u, v) = self.grid.body_fixed_to_uv(lon_rad, lat_rad)?;
+        let footprint = self.select_level(sky_radius_rad, mu)?;
+        Some((self.mix_at(footprint.level, u, v), footprint))
     }
 
     /// Largest plane sum over the grid, in raw u8 units.
@@ -231,16 +304,70 @@ impl AbundanceTier {
     /// each plane can round up by at most one unit. A larger value means the
     /// planes do not describe a partition and the file is corrupt.
     pub fn max_plane_sum(&self) -> u32 {
-        let cells = self.width * self.height;
+        let l = &self.levels[0];
+        let cells = l.width * l.height;
         (0..cells)
             .map(|i| {
                 (0..self.endmembers.len())
-                    .map(|e| self.planes[e * cells + i] as u32)
+                    .map(|e| l.planes[e * cells + i] as u32)
                     .sum::<u32>()
             })
             .max()
             .unwrap_or(0)
     }
+}
+
+impl SurfaceSampler for AbundanceTier {
+    fn sample_area(
+        &self,
+        lon_rad: f64,
+        lat_rad: f64,
+        sky_radius_rad: f64,
+        mu: f64,
+    ) -> Option<(EndmemberMix, SampleFootprint)> {
+        AbundanceTier::sample_area(self, lon_rad, lat_rad, sky_radius_rad, mu)
+    }
+
+    fn endmembers(&self) -> Vec<Endmember> {
+        self.endmembers.clone()
+    }
+}
+
+/// Box-filter every plane down to a 1x1 level.
+///
+/// Averaging abundances preserves the partition: if the planes summed to at
+/// most 1 before, they do after, so a coarse level is still a valid mix.
+fn build_pyramid(base: TierLevel) -> Vec<TierLevel> {
+    let mut levels = vec![base];
+    while levels.last().unwrap().width > 1 || levels.last().unwrap().height > 1 {
+        let prev = levels.last().unwrap();
+        let width = (prev.width / 2).max(1);
+        let height = (prev.height / 2).max(1);
+        let n = prev.planes.len() / (prev.width * prev.height);
+        let mut planes = vec![0u8; n * width * height];
+        for e in 0..n {
+            for row in 0..height {
+                for col in 0..width {
+                    let mut sum = 0u32;
+                    for dy in 0..2 {
+                        for dx in 0..2 {
+                            let sr = (row * 2 + dy).min(prev.height - 1);
+                            let sc = (col * 2 + dx).min(prev.width - 1);
+                            sum += prev.planes[e * prev.width * prev.height + sr * prev.width + sc]
+                                as u32;
+                        }
+                    }
+                    planes[e * width * height + row * width + col] = (sum / 4) as u8;
+                }
+            }
+        }
+        levels.push(TierLevel {
+            width,
+            height,
+            planes,
+        });
+    }
+    levels
 }
 
 /// The embedded Earth tier: MODIS MCD12G1-derived endmember abundances at 0.25°.
@@ -389,6 +516,88 @@ mod tests {
             pacific.len() < t.endmembers().len(),
             "open ocean should not carry every endmember"
         );
+    }
+
+    #[test]
+    fn pyramid_halves_down_to_one_texel() {
+        let t = tier();
+        // 1440x720 -> 11 levels before both axes reach 1.
+        assert_eq!(t.levels(), 11);
+    }
+
+    #[test]
+    fn coarse_levels_stay_valid_mixes() {
+        // Averaging abundances preserves the partition, so a blurred texel is
+        // still a mix and not something summing past 1.
+        let t = tier();
+        for level in 0..t.levels() {
+            let mix = t.mix_at(level, 0.4, 0.55);
+            assert!(
+                mix.total_weight() <= 1.02,
+                "level {level} total weight {}",
+                mix.total_weight()
+            );
+        }
+    }
+
+    #[test]
+    fn a_coarser_footprint_selects_a_coarser_level() {
+        let t = tier();
+        let fine = t.select_level(1e-5, 1.0).unwrap();
+        let coarse = t.select_level(1e-2, 1.0).unwrap();
+        assert_eq!(fine.level, 0);
+        assert!(coarse.level > fine.level, "{coarse:?} vs {fine:?}");
+        // And the limb coarsens further, with the clamp reported.
+        let limb = t.select_level(1e-2, 1e-9).unwrap();
+        assert!(limb.mu_clamped);
+        assert!(limb.level >= coarse.level);
+        assert!(limb.level < t.levels());
+    }
+
+    #[test]
+    fn blurring_the_ocean_keeps_it_ocean() {
+        // A large footprint in the mid-Pacific must stay water at every level;
+        // if the pyramid were built per-texel-max or otherwise wrongly it would
+        // drift toward land.
+        let t = tier();
+        for radius in [1e-5, 1e-3, 1e-2] {
+            let (mix, fp) = t
+                .sample_area((-140f64).to_radians(), 0.0, radius, 1.0)
+                .unwrap();
+            let water: f64 = mix
+                .weights()
+                .iter()
+                .filter(|(e, _)| matches!(e, Endmember::OpenOcean | Endmember::CoastalWater))
+                .map(|(_, w)| *w)
+                .sum();
+            assert!(water > 0.85, "level {} water {water}", fp.level);
+        }
+    }
+
+    #[test]
+    fn the_trait_gives_one_interface_for_both_backings() {
+        use crate::map::{PhotometricBand, SurfaceSampler};
+        use crate::MapGrid;
+
+        let t = tier();
+        let m = crate::AlbedoMap::new(
+            MapGrid::usgs_default(),
+            PhotometricBand::new(400.0, 700.0),
+            Endmember::FreshBasalt,
+            0.1,
+            64,
+            32,
+            vec![0.05; 64 * 32],
+        )
+        .unwrap();
+
+        let samplers: Vec<&dyn SurfaceSampler> = vec![&t, &m];
+        for s in samplers {
+            let (mix, fp) = s.sample_area(0.3, 0.2, 1e-4, 0.8).unwrap();
+            assert!(!s.endmembers().is_empty());
+            assert!(mix.total_weight() > 0.0);
+            assert!(fp.anisotropy > 1.0);
+        }
     }
 
     #[test]

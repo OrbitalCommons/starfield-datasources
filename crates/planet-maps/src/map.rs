@@ -99,6 +99,7 @@ pub struct AlbedoMap {
     grid: MapGrid,
     band: PhotometricBand,
     endmember: Endmember,
+    endmember_band_mean: f64,
     levels: Vec<Level>,
 }
 
@@ -114,11 +115,20 @@ impl AlbedoMap {
         grid: MapGrid,
         band: PhotometricBand,
         endmember: Endmember,
+        endmember_band_mean: f64,
         width: usize,
         height: usize,
         data: Vec<f32>,
     ) -> Option<Self> {
         if width == 0 || height == 0 || data.len() != width * height {
+            return None;
+        }
+        // Taken once here rather than per sample: it is a property of
+        // (endmember, band), both of which this map already knows, and the
+        // consumer wanted one reflectance-library call per render rather than
+        // one per sub-sample. Rejecting it here also means `sample_area` cannot
+        // fail for a reason unrelated to the position it was asked about.
+        if !endmember_band_mean.is_finite() || endmember_band_mean <= 0.0 {
             return None;
         }
         let mut levels = vec![Level {
@@ -133,6 +143,7 @@ impl AlbedoMap {
             grid,
             band,
             endmember,
+            endmember_band_mean,
             levels,
         })
     }
@@ -150,6 +161,12 @@ impl AlbedoMap {
     /// The endmember this map's albedo is expressed against.
     pub fn endmember(&self) -> Endmember {
         self.endmember
+    }
+
+    /// The endmember's mean reflectance over [`AlbedoMap::band`], as supplied
+    /// at construction.
+    pub fn endmember_band_mean(&self) -> f64 {
+        self.endmember_band_mean
     }
 
     /// Number of pyramid levels; level 0 is full resolution.
@@ -220,34 +237,68 @@ impl AlbedoMap {
     ///
     /// The returned mix expresses the sampled albedo as an abundance of this
     /// map's endmember, defined so that the mix's reflectance averaged over
-    /// [`AlbedoMap::band`] reproduces the sampled albedo. That requires the
-    /// endmember's own band mean, which the caller supplies as
-    /// `endmember_band_mean` — computed once per render from the reflectance
-    /// library, not per sample.
+    /// [`AlbedoMap::band`] reproduces the sampled albedo.
     ///
-    /// Returns `None` if the position or footprint is invalid, or if
-    /// `endmember_band_mean` is not positive.
+    /// A scalar map is a one-endmember approximation: brightness varies across
+    /// the disk but colour does not. Where an [`crate::AbundanceTier`] exists
+    /// for a body, prefer it — it carries real per-texel composition.
     pub fn sample_area(
         &self,
         lon_rad: f64,
         lat_rad: f64,
         sky_radius_rad: f64,
         mu: f64,
-        endmember_band_mean: f64,
     ) -> Option<(EndmemberMix, SampleFootprint)> {
-        // is_finite first, so a NaN mean is rejected rather than slipping
-        // through the ordering comparison.
-        if !endmember_band_mean.is_finite() || endmember_band_mean <= 0.0 {
-            return None;
-        }
         let (u, v) = self.grid.body_fixed_to_uv(lon_rad, lat_rad)?;
         let footprint = self.select_level(sky_radius_rad, mu)?;
         let albedo = self.levels[footprint.level].sample(u, v);
-        let abundance = albedo / endmember_band_mean;
+        let abundance = albedo / self.endmember_band_mean;
         Some((
             EndmemberMix::new(vec![(self.endmember, abundance)]),
             footprint,
         ))
+    }
+}
+
+/// One interface for sampling a body's surface composition, whether it is
+/// backed by a scalar albedo map or by real per-texel endmember abundances.
+///
+/// A consumer should not have to branch on which a body happens to have: the
+/// difference is data coverage, not physics. `AlbedoMap` returns a
+/// one-endmember mix; `AbundanceTier` returns however many endmembers the
+/// texel actually contains.
+pub trait SurfaceSampler {
+    /// Composition over a footprint, and how the resolution level was chosen.
+    ///
+    /// `lon_rad`/`lat_rad` are east-positive planetocentric radians,
+    /// `sky_radius_rad` is the **sky** footprint radius, `mu` the emission
+    /// cosine.
+    fn sample_area(
+        &self,
+        lon_rad: f64,
+        lat_rad: f64,
+        sky_radius_rad: f64,
+        mu: f64,
+    ) -> Option<(EndmemberMix, SampleFootprint)>;
+
+    /// Every endmember this surface can return, so a consumer can precompute
+    /// band means once per render.
+    fn endmembers(&self) -> Vec<Endmember>;
+}
+
+impl SurfaceSampler for AlbedoMap {
+    fn sample_area(
+        &self,
+        lon_rad: f64,
+        lat_rad: f64,
+        sky_radius_rad: f64,
+        mu: f64,
+    ) -> Option<(EndmemberMix, SampleFootprint)> {
+        AlbedoMap::sample_area(self, lon_rad, lat_rad, sky_radius_rad, mu)
+    }
+
+    fn endmembers(&self) -> Vec<Endmember> {
+        vec![self.endmember]
     }
 }
 
@@ -289,6 +340,7 @@ mod tests {
             MapGrid::usgs_default(),
             PhotometricBand::monochrome(643.0, 20.0),
             Endmember::FreshBasalt,
+            0.12,
             width,
             height,
             vec![value; width * height],
@@ -300,8 +352,11 @@ mod tests {
     fn rejects_mismatched_dimensions() {
         let g = MapGrid::usgs_default();
         let b = PhotometricBand::new(400.0, 700.0);
-        assert!(AlbedoMap::new(g, b, Endmember::Sand, 4, 4, vec![0.0; 15]).is_none());
-        assert!(AlbedoMap::new(g, b, Endmember::Sand, 0, 4, vec![]).is_none());
+        assert!(AlbedoMap::new(g, b, Endmember::Sand, 0.1, 4, 4, vec![0.0; 15]).is_none());
+        assert!(AlbedoMap::new(g, b, Endmember::Sand, 0.1, 0, 4, vec![]).is_none());
+        // A non-positive band mean is rejected at construction now.
+        assert!(AlbedoMap::new(g, b, Endmember::Sand, 0.0, 4, 4, vec![0.0; 16]).is_none());
+        assert!(AlbedoMap::new(g, b, Endmember::Sand, f64::NAN, 4, 4, vec![0.0; 16]).is_none());
     }
 
     #[test]
@@ -334,6 +389,7 @@ mod tests {
             MapGrid::usgs_default(),
             PhotometricBand::new(400.0, 700.0),
             Endmember::Sand,
+            0.29,
             w,
             h,
             data.clone(),
@@ -360,6 +416,7 @@ mod tests {
             MapGrid::usgs_default(),
             PhotometricBand::new(400.0, 700.0),
             Endmember::Sand,
+            0.29,
             w,
             h,
             data,
@@ -435,10 +492,8 @@ mod tests {
         // mix reflectance averaged over the map's band equals the map albedo.
         let albedo = 0.24f32;
         let m = uniform_map(64, 32, albedo);
-        let endmember_band_mean = 0.12;
-        let (mix, _) = m
-            .sample_area(0.5, 0.1, 1e-4, 1.0, endmember_band_mean)
-            .unwrap();
+        let endmember_band_mean = m.endmember_band_mean();
+        let (mix, _) = m.sample_area(0.5, 0.1, 1e-4, 1.0).unwrap();
         assert_eq!(mix.len(), 1);
         let (e, w) = mix.weights()[0];
         assert_eq!(e, Endmember::FreshBasalt);
@@ -447,19 +502,9 @@ mod tests {
     }
 
     #[test]
-    fn sample_area_rejects_a_non_positive_endmember_mean() {
-        // Dividing by it would produce an infinite abundance that looks like a
-        // very bright surface rather than an error.
-        let m = uniform_map(64, 32, 0.2);
-        assert!(m.sample_area(0.0, 0.0, 1e-4, 1.0, 0.0).is_none());
-        assert!(m.sample_area(0.0, 0.0, 1e-4, 1.0, -0.1).is_none());
-        assert!(m.sample_area(0.0, 0.0, 1e-4, 1.0, f64::NAN).is_none());
-    }
-
-    #[test]
     fn sample_area_rejects_non_finite_positions() {
         let m = uniform_map(64, 32, 0.2);
-        assert!(m.sample_area(f64::NAN, 0.0, 1e-4, 1.0, 0.1).is_none());
+        assert!(m.sample_area(f64::NAN, 0.0, 1e-4, 1.0).is_none());
     }
 
     #[test]

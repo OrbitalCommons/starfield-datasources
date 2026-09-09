@@ -29,7 +29,7 @@ pub use tier::{earth_tier, AbundanceTier, Registration, EARTH_TIER_GZ};
 
 pub use products::{require_product_for, MapProduct, PRODUCTS, USGS_MOSAIC_BASE_URL};
 
-pub use map::{AlbedoMap, PhotometricBand, SampleFootprint, MU_FLOOR};
+pub use map::{AlbedoMap, PhotometricBand, SampleFootprint, SurfaceSampler, MU_FLOOR};
 
 pub use grid::{
     planetocentric_to_planetographic, planetographic_to_planetocentric, Latitude, Longitude,
