@@ -145,6 +145,59 @@ impl SampledCurve {
         Some(total)
     }
 
+    /// Mean value over `[lo_nm, hi_nm]` weighted by a response function.
+    ///
+    /// Walks the interval in `step_nm` steps, evaluating both this curve and
+    /// `response` at each step's midpoint — a midpoint-rule integral of
+    /// `f(λ)·w(λ)`, normalised by the integral of `w` alone, so a flat response
+    /// reproduces [`SampledCurve::mean_over`].
+    ///
+    /// The step is explicit rather than inferred because the right value depends
+    /// on the *response*, not on this curve: a narrow filter needs a fine step
+    /// even across a coarsely sampled curve. Choose a step at least as fine as
+    /// the sharpest feature in either. 1 nm suits detector quantum-efficiency
+    /// curves and matches the solar reference spectrum's own grid.
+    ///
+    /// Returns `None` if the interval is invalid, is not wholly covered, if
+    /// `step_nm` is not positive and finite, or if the response integrates to
+    /// zero over the interval.
+    pub fn weighted_mean<F>(
+        &self,
+        lo_nm: f64,
+        hi_nm: f64,
+        step_nm: f64,
+        mut response: F,
+    ) -> Option<f64>
+    where
+        F: FnMut(f64) -> f64,
+    {
+        if !lo_nm.is_finite() || !hi_nm.is_finite() || lo_nm >= hi_nm {
+            return None;
+        }
+        if !step_nm.is_finite() || step_nm <= 0.0 {
+            return None;
+        }
+        let (min, max) = self.range_nm();
+        if lo_nm < min || hi_nm > max {
+            return None;
+        }
+
+        let steps = (((hi_nm - lo_nm) / step_nm).ceil() as usize).max(1);
+        let width = (hi_nm - lo_nm) / steps as f64;
+        let mut numerator = 0.0;
+        let mut denominator = 0.0;
+        for i in 0..steps {
+            let nm = lo_nm + (i as f64 + 0.5) * width;
+            let w = response(nm);
+            numerator += self.at(nm)? * w * width;
+            denominator += w * width;
+        }
+        if denominator == 0.0 {
+            return None;
+        }
+        Some(numerator / denominator)
+    }
+
     /// Restrict to `[lo_nm, hi_nm]`, keeping interior samples and interpolating
     /// exact endpoints.
     ///
@@ -228,6 +281,41 @@ mod tests {
         // A NaN in the grid must be rejected, not silently accepted: every
         // comparison against NaN is false, so a plain `>=` check would pass it.
         assert!(SampledCurve::new(vec![400.0, f64::NAN, 600.0], vec![0.4, 0.5, 0.6]).is_err());
+    }
+
+    #[test]
+    fn flat_response_reproduces_the_unweighted_mean() {
+        let c = ramp();
+        let plain = c.mean_over(400.0, 600.0).unwrap();
+        let weighted = c.weighted_mean(400.0, 600.0, 1.0, |_| 1.0).unwrap();
+        assert!((plain - weighted).abs() < 1e-9, "{plain} vs {weighted}");
+        // The normalisation divides the response out, so its scale is irrelevant.
+        let scaled = c.weighted_mean(400.0, 600.0, 1.0, |_| 7.5).unwrap();
+        assert!((plain - scaled).abs() < 1e-9);
+    }
+
+    #[test]
+    fn weighting_pulls_the_mean_toward_the_weighted_region() {
+        let c = ramp();
+        // A response that only passes the blue half must return that half's mean.
+        let blue = c
+            .weighted_mean(400.0, 600.0, 0.5, |nm| if nm < 500.0 { 1.0 } else { 0.0 })
+            .unwrap();
+        let blue_direct = c.mean_over(400.0, 500.0).unwrap();
+        assert!((blue - blue_direct).abs() < 1e-3, "{blue} vs {blue_direct}");
+        assert!(blue < c.mean_over(400.0, 600.0).unwrap());
+    }
+
+    #[test]
+    fn weighted_mean_rejects_bad_inputs() {
+        let c = ramp();
+        assert_eq!(c.weighted_mean(400.0, 600.0, 0.0, |_| 1.0), None);
+        assert_eq!(c.weighted_mean(400.0, 600.0, -1.0, |_| 1.0), None);
+        assert_eq!(c.weighted_mean(400.0, 600.0, f64::NAN, |_| 1.0), None);
+        assert_eq!(c.weighted_mean(300.0, 600.0, 1.0, |_| 1.0), None);
+        assert_eq!(c.weighted_mean(600.0, 400.0, 1.0, |_| 1.0), None);
+        // A response that is zero everywhere has no defined weighted mean.
+        assert_eq!(c.weighted_mean(400.0, 600.0, 1.0, |_| 0.0), None);
     }
 
     #[test]

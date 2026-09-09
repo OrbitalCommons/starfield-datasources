@@ -28,6 +28,11 @@ are what make colour vary across the disk.
 
 ### starfield-datasource-utils
 
+- `SampledCurve::weighted_mean(lo, hi, step, response)` — midpoint-rule integral
+  against a filter or detector response, normalised so a flat response reproduces
+  `mean_over`. The step is explicit because the right value depends on the
+  response, not on the curve: a narrow filter needs a fine step even across a
+  coarsely sampled curve
 - New `SampledCurve`: shared wavelength-sampled curve with one implementation of
   interpolation and band means. `SpectralAlbedo` and `Reflectance` now both wrap
   it, so their band-mean semantics cannot drift apart — a renderer combines
