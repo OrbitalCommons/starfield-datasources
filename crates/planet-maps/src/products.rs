@@ -23,11 +23,17 @@ use starfield_reflectance_library::Endmember;
 use crate::grid::MapGrid;
 use crate::map::PhotometricBand;
 
+/// WGS84 flattening, for Blue Marble's geodetic latitude.
+pub const EARTH_WGS84_FLATTENING: f64 = 1.0 / 298.257_223_563;
+
 /// Cache subdirectory for downloaded mosaics.
 const CACHE_SUBDIR: &str = "planet-maps";
 
 /// USGS serves mosaics from here; requests 302 to an S3 bucket.
 pub const USGS_MOSAIC_BASE_URL: &str = "https://planetarymaps.usgs.gov/mosaic/";
+
+/// NASA Earth Observatory image records, which host Blue Marble.
+pub const NASA_EOIMAGES_BASE_URL: &str = "https://eoimages.gsfc.nasa.gov/images/imagerecords/";
 
 /// One archive mosaic, with everything needed to fetch and register it.
 #[derive(Debug, Clone, Copy)]
@@ -50,20 +56,44 @@ pub struct MapProduct {
     pub monochrome: bool,
     /// Provenance note.
     pub description: &'static str,
+    /// Path under the host, when the product is not a USGS mosaic.
+    ///
+    /// `None` means [`USGS_MOSAIC_BASE_URL`] + [`MapProduct::file_name`].
+    pub url_override: Option<&'static str>,
+    /// Whether the pixel values are radiometrically calibrated reflectance.
+    ///
+    /// `false` marks a *visualization* product — contrast-enhanced for human
+    /// viewing, correct in appearance but not in absolute brightness. Usable to
+    /// make a body look right; not usable to claim a photometric result.
+    pub calibrated: bool,
 }
 
 impl MapProduct {
     /// Full download URL.
     pub fn url(&self) -> String {
-        format!("{}{}", USGS_MOSAIC_BASE_URL, self.file_name)
+        match self.url_override {
+            Some(url) => url.to_string(),
+            None => format!("{}{}", USGS_MOSAIC_BASE_URL, self.file_name),
+        }
     }
 
     /// Coordinate conventions of the stored product.
     ///
-    /// Every USGS mosaic in this table is east-positive planetocentric with
-    /// north at row 0 and column 0 at longitude 0.
+    /// The USGS mosaics are east-positive planetocentric, north at row 0,
+    /// column 0 at longitude 0. Blue Marble differs on two counts and is the
+    /// reason this is a per-product method rather than a constant: it spans
+    /// -180..180 rather than 0..360, and its latitude is **geodetic**, which on
+    /// Earth is 0.19 deg from planetocentric at 45 deg - two pixels at
+    /// 0.1 deg/px.
     pub fn grid(&self) -> MapGrid {
-        MapGrid::usgs_default()
+        if self.naif_id == 399 {
+            MapGrid::usgs_default()
+                .planetographic()
+                .with_flattening(EARTH_WGS84_FLATTENING)
+                .with_lon0_deg(-180.0)
+        } else {
+            MapGrid::usgs_default()
+        }
     }
 
     /// Where [`MapProduct::download`] puts the file.
@@ -120,6 +150,8 @@ pub static PRODUCTS: &[MapProduct] = &[
         endmember: Endmember::FreshBasalt,
         monochrome: true,
         description: "LRO LROC WAC global morphology mosaic, 100 m, 643 nm",
+        url_override: None,
+        calibrated: true,
     },
     MapProduct {
         id: "mars-viking-color-925m",
@@ -133,6 +165,8 @@ pub static PRODUCTS: &[MapProduct] = &[
         endmember: Endmember::WeatheredBasalt,
         monochrome: false,
         description: "Viking colour global mosaic, 925 m",
+        url_override: None,
+        calibrated: true,
     },
     MapProduct {
         id: "mars-viking-mdim21-color-232m",
@@ -146,6 +180,8 @@ pub static PRODUCTS: &[MapProduct] = &[
         endmember: Endmember::WeatheredBasalt,
         monochrome: false,
         description: "Viking MDIM 2.1 colour global mosaic, 232 m",
+        url_override: None,
+        calibrated: true,
     },
     MapProduct {
         id: "ganymede-voyager-galileo-color-1435m",
@@ -159,6 +195,8 @@ pub static PRODUCTS: &[MapProduct] = &[
         endmember: Endmember::WaterIce,
         monochrome: false,
         description: "Voyager/Galileo SSI colour global mosaic, 1.435 km",
+        url_override: None,
+        calibrated: true,
     },
     MapProduct {
         id: "callisto-voyager-galileo-1km",
@@ -172,6 +210,27 @@ pub static PRODUCTS: &[MapProduct] = &[
         endmember: Endmember::WaterIce,
         monochrome: true,
         description: "Voyager/Galileo SSI global mosaic, 1 km",
+        url_override: None,
+        calibrated: true,
+    },
+    MapProduct {
+        id: "earth-bmng-200412-5400",
+        naif_id: 399,
+        file_name: "world.topo.bathy.200412.3x5400x2700.jpg",
+        size_bytes: 2_566_770,
+        band: PhotometricBand {
+            lo_nm: 400.0,
+            hi_nm: 700.0,
+        },
+        endmember: Endmember::GreenVegetation,
+        monochrome: false,
+        description: "Blue Marble Next Generation, December 2004, 5400x2700, \
+                      cloud-free true colour. VISUALIZATION PRODUCT - see `calibrated`",
+        url_override: Some(
+            "https://eoimages.gsfc.nasa.gov/images/imagerecords/73000/73909/\
+             world.topo.bathy.200412.3x5400x2700.jpg",
+        ),
+        calibrated: false,
     },
 ];
 
@@ -211,14 +270,13 @@ mod tests {
     }
 
     #[test]
-    fn urls_point_at_the_usgs_mosaic_host() {
+    fn urls_point_at_a_known_host() {
         for p in PRODUCTS {
             let url = p.url();
             assert!(
-                url.starts_with("https://planetarymaps.usgs.gov/mosaic/"),
+                url.starts_with(USGS_MOSAIC_BASE_URL) || url.starts_with(NASA_EOIMAGES_BASE_URL),
                 "{url}"
             );
-            assert!(url.ends_with(".tif"), "{url}");
         }
     }
 
@@ -241,14 +299,70 @@ mod tests {
     }
 
     #[test]
-    fn every_product_uses_the_usgs_grid_convention() {
+    fn planetary_products_use_the_usgs_grid_convention() {
         use crate::grid::{Latitude, Longitude, RowOrder};
-        for p in PRODUCTS {
+        for p in PRODUCTS.iter().filter(|p| p.naif_id != 399) {
             let g = p.grid();
             assert_eq!(g.longitude, Longitude::EastPositive, "{}", p.id);
             assert_eq!(g.latitude, Latitude::Planetocentric, "{}", p.id);
             assert_eq!(g.row_order, RowOrder::NorthFirst, "{}", p.id);
+            assert_eq!(g.lon0_deg, 0.0, "{}", p.id);
+            assert_eq!(g.flattening, 0.0, "{}", p.id);
         }
+    }
+
+    #[test]
+    fn earth_uses_geodetic_latitude_and_a_centred_seam() {
+        // Blue Marble is the product that exercises the non-trivial grid path:
+        // geodetic latitude on a flattened body, spanning -180..180.
+        use crate::grid::{Latitude, Longitude};
+        let earth = MapProduct::by_id("earth-bmng-200412-5400").unwrap();
+        let g = earth.grid();
+        assert_eq!(g.latitude, Latitude::Planetographic);
+        assert_eq!(g.longitude, Longitude::EastPositive);
+        assert_eq!(g.lon0_deg, -180.0);
+        assert!((g.flattening - EARTH_WGS84_FLATTENING).abs() < 1e-15);
+
+        // The prime meridian sits at the centre of the raster, not the edge.
+        let (u, _) = g.body_fixed_to_uv(0.0, 0.0).unwrap();
+        assert!((u - 0.5).abs() < 1e-12, "u = {u}");
+
+        // Geodetic latitude runs ahead of planetocentric away from the equator,
+        // so 45 deg planetocentric lands north of the halfway row by ~0.19 deg.
+        let (_, v_equator) = g.body_fixed_to_uv(0.0, 0.0).unwrap();
+        assert!((v_equator - 0.5).abs() < 1e-12);
+        let (_, v45) = g.body_fixed_to_uv(0.0, 45f64.to_radians()).unwrap();
+        let v45_spherical = (90.0 - 45.0) / 180.0;
+        let offset_deg = (v45_spherical - v45) * 180.0;
+        assert!(
+            (0.18..0.21).contains(&offset_deg),
+            "geodetic offset {offset_deg} deg"
+        );
+    }
+
+    #[test]
+    fn blue_marble_is_flagged_as_uncalibrated() {
+        // It is a visualization product: contrast-enhanced for human viewing.
+        // Fine for making Earth look right, not for a photometric claim.
+        let earth = MapProduct::by_id("earth-bmng-200412-5400").unwrap();
+        assert!(!earth.calibrated);
+        // Everything else in the table is a calibrated archive product.
+        for p in PRODUCTS.iter().filter(|p| p.naif_id != 399) {
+            assert!(p.calibrated, "{}", p.id);
+        }
+    }
+
+    #[test]
+    fn url_overrides_produce_a_single_unbroken_url() {
+        // The literal is split across source lines with a continuation; if the
+        // escape were wrong the URL would contain whitespace and 404.
+        let earth = MapProduct::by_id("earth-bmng-200412-5400").unwrap();
+        let url = earth.url();
+        assert!(!url.contains(char::is_whitespace), "{url}");
+        assert_eq!(
+            url,
+            "https://eoimages.gsfc.nasa.gov/images/imagerecords/73000/73909/world.topo.bathy.200412.3x5400x2700.jpg"
+        );
     }
 
     #[test]
