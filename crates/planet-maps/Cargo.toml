@@ -1,0 +1,12 @@
+[package]
+name = "starfield-planet-maps"
+version = "0.1.0"
+description = "Equirectangular planetary albedo maps in body-fixed coordinates, with explicit archive conventions"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+starfield = { workspace = true }
+starfield-datasource-utils = { version = "0.1.0", path = "../datasource-utils" }
+starfield-reflectance-library = { version = "0.1.0", path = "../reflectance-library" }

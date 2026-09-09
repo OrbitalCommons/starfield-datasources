@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.12.0 — Endmember reflectance library
+
+### starfield-reflectance-library 0.1.0 (new)
+
+focalplane D1.2. Multiplying a monochrome map by one disk-integrated spectrum
+gives a body whose colour is uniform and only its brightness varies. Endmembers
+are what make colour vary across the disk.
+
+- Nine curated endmembers from USGS Spectral Library 7 (Kokaly et al. 2017,
+  doi:10.5066/F7RR1WDJ): open ocean, coastal water, green and dry vegetation,
+  sand, snow, water ice, fresh and weathered basalt
+- `scripts/build_table.py` regenerates the table from the ScienceBase archive,
+  pairing each spectrum with its spectrometer's wavelength grid and dropping
+  splib07's deleted-channel sentinel
+- `Endmember` is the stable id shared with the map crate; `EndmemberMix` is what
+  the sampler will return, with a uniform surface as a one-endmember mix
+- Mix weights are not renormalised — a partially covered texel is legitimately
+  short, and renormalising would hide the missing fraction
+- `EndmemberMix` evaluation returns `None` if *any* component lacks coverage,
+  rather than silently averaging the subset that happens to have data
+- `Endmember::WaterIce` covers 859 nm and longward only; splib07 has no
+  visible water-ice spectrum. Not padded — the accessors report the gap
+- Tests assert real spectroscopy: the vegetation red edge (12.4x from 680 to
+  750 nm, absent in dry vegetation), snow bright in the visible and 50x darker
+  in the SWIR, ocean dark and blue, basalt dark and flat
+
+### starfield-datasource-utils
+
+- `SampledCurve::weighted_mean(lo, hi, step, response)` — midpoint-rule integral
+  against a filter or detector response, normalised so a flat response reproduces
+  `mean_over`. The step is explicit because the right value depends on the
+  response, not on the curve: a narrow filter needs a fine step even across a
+  coarsely sampled curve
+- New `SampledCurve`: shared wavelength-sampled curve with one implementation of
+  interpolation and band means. `SpectralAlbedo` and `Reflectance` now both wrap
+  it, so their band-mean semantics cannot drift apart — a renderer combines
+  values from both in a single expression, and a disagreement about partially
+  covered bands would surface as an unexplained photometric error
+
+### Facade crate
+
+- New `reflectance-library` feature (not default)
+
 ## 0.11.0 — Solar reference spectrum
 
 ### starfield-solar-spectrum 0.1.0 (new)
