@@ -172,7 +172,7 @@ impl KarkoschkaTable {
         // Adoption happens here and nowhere else. `download_with` stays
         // hermetic so a caller who built a deliberately cold store gets one --
         // see its docs.
-        adopt_legacy_cache(&store, product);
+        let _ = adopt_legacy_cache(&store, product);
         Self::download_with(&store, product)
     }
 
@@ -336,12 +336,12 @@ impl KarkoschkaTable {
 /// after upgrading would re-fetch a file the user already has — and an offline
 /// consumer, or one whose upstream has since died, would fail outright despite
 /// the data sitting on disk.
-fn adopt_legacy_cache(store: &Datastore, product: Product) {
+fn adopt_legacy_cache(store: &Datastore, product: Product) -> bool {
     adopt_legacy_cache_from(
         store,
         product,
         &starfield_datasource_utils::cache_dir().join(LEGACY_CACHE_SUBDIR),
-    );
+    )
 }
 
 /// [`adopt_legacy_cache`] against an explicit directory, so the adoption path
@@ -623,24 +623,72 @@ mod tests {
         ));
     }
 
+    /// Child of [`download_with_ignores_a_discoverable_legacy_cache`].
+    ///
+    /// Runs with `HOME` pointing at a temp home that really does contain
+    /// `.cache/starfield/karkoschka/<product>`, so `cache_dir()` *can* find it.
+    /// That is the whole point: a hermeticity test that writes somewhere
+    /// `cache_dir()` never looks proves nothing, because reinstating adoption in
+    /// `download_with` would still pass on a machine with no global legacy file.
     #[test]
-    fn download_with_is_hermetic() {
-        // The regression that matters most here: download_with must resolve
-        // through the given store and nowhere else. A cold canary store has to
-        // stay cold, or a stale file on the developer's disk satisfies a test
-        // whose entire purpose is to contact the archive.
-        //
-        // A legacy file exists, and is deliberately NOT adopted; against an
-        // offline empty store the resolve must fail.
-        let legacy_dir = tempfile::tempdir().unwrap();
+    #[ignore = "spawned as a child with a synthetic HOME; not standalone"]
+    fn hermetic_child() {
+        let legacy = starfield_datasource_utils::cache_dir()
+            .join(LEGACY_CACHE_SUBDIR)
+            .join(Product::Low1995.file_name());
+        assert!(
+            legacy.exists(),
+            "child setup is wrong: no legacy file at {}",
+            legacy.display()
+        );
+
+        let store_root = tempfile::tempdir().unwrap();
+        let store = offline_store(store_root.path());
+        assert!(
+            KarkoschkaTable::download_with(&store, Product::Low1995).is_err(),
+            "download_with adopted a discoverable legacy file; it must be hermetic"
+        );
+
+        // The same file IS adopted through the explicit path, so the child
+        // proves hermeticity rather than merely that nothing works.
+        assert!(adopt_legacy_cache(&store, Product::Low1995));
+        assert!(KarkoschkaTable::download_with(&store, Product::Low1995).is_ok());
+    }
+
+    #[test]
+    fn download_with_ignores_a_discoverable_legacy_cache() {
+        // Subprocess rather than mutating HOME in-process: the test harness runs
+        // threads in parallel and a process-global env change would leak into
+        // unrelated tests.
+        let home = tempfile::tempdir().unwrap();
+        let legacy_dir = home
+            .path()
+            .join(".cache")
+            .join("starfield")
+            .join(LEGACY_CACHE_SUBDIR);
+        std::fs::create_dir_all(&legacy_dir).unwrap();
         std::fs::write(
-            legacy_dir.path().join(Product::Low1995.file_name()),
+            legacy_dir.join(Product::Low1995.file_name()),
             EMBEDDED_LOW_1995,
         )
         .unwrap();
-        let store_root = tempfile::tempdir().unwrap();
-        let store = offline_store(store_root.path());
-        assert!(KarkoschkaTable::download_with(&store, Product::Low1995).is_err());
+
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "karkoschka::tests::hermetic_child",
+            ])
+            .env("HOME", home.path())
+            .output()
+            .expect("spawn child test");
+        assert!(
+            out.status.success(),
+            "child failed:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
     }
 
     #[test]
