@@ -16,10 +16,10 @@ pub struct Cli {
     #[arg(long = "input", num_args = 1.., conflicts_with = "from_release")]
     pub input: Vec<PathBuf>,
 
-    /// Pull the inputs straight from ESA's CDN for the given release. Combined
+    /// Resolve inputs through the configured datastore for the given release. Combined
     /// with `--max-files N` to limit how many files are processed; default is
-    /// every file in the release. By default the raw bytes are streamed and
-    /// never written to disk; pass `--cache-raw` to keep them under the
+    /// every file in the release. By default one raw file is validated in a
+    /// temporary store and removed after reading; pass `--cache-raw` to keep it under the
     /// per-release cache (`~/.cache/starfield/gaia/dr*/`).
     #[arg(long = "from-release", value_enum, conflicts_with = "input")]
     pub from_release: Option<ReleaseChoice>,
@@ -29,8 +29,8 @@ pub struct Cli {
     pub max_files: Option<usize>,
 
     /// When `--from-release` is set, write each downloaded raw file to the
-    /// per-release cache. Default streams the bytes through and discards the
-    /// raw to keep disk usage low.
+    /// per-release cache. By default temporary raw files are removed after
+    /// reading to keep steady-state disk usage low.
     #[arg(long = "cache-raw", default_value_t = false)]
     pub cache_raw: bool,
 
@@ -45,8 +45,8 @@ pub struct Cli {
     /// extracted. Applies to both `--input` local paths AND `--from-release
     /// --cache-raw` CDN-cached files (which makes that mode "stage to disk,
     /// extract, evict" — bounded steady-state disk for the raw bytes).
-    /// No-op for `--from-release` without `--cache-raw` (streaming mode
-    /// never stages anything to disk in the first place).
+    /// No-op for `--from-release` without `--cache-raw` (temporary files are
+    /// already removed when the reader closes).
     #[arg(long = "clean-after-excerpt", default_value_t = false)]
     pub clean_after_excerpt: bool,
 

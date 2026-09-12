@@ -1,6 +1,6 @@
 [package]
 name = "starfield-rubin"
-version = "0.1.0"
+version = "0.1.1"
 description = "Clients for Vera C. Rubin Observatory LSST alert brokers"
 edition.workspace = true
 license.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "starfield-datasources"
-version = "0.13.0"
+version = "0.13.1"
 description = "Astronomical data source clients for the starfield ecosystem"
 edition.workspace = true
 license.workspace = true
@@ -23,6 +23,22 @@ planet-maps = ["dep:starfield-planet-maps"]
 reflectance-library = ["dep:starfield-reflectance-library"]
 solar-spectrum = ["dep:starfield-solar-spectrum"]
 rubin = ["dep:starfield-rubin"]
+
+[[test]]
+name = "pullthrough"
+required-features = ["gaia-all", "planet-maps", "planet-spectra", "mast", "hipparcos"]
+
+[[example]]
+name = "datastore_manifest"
+required-features = ["gaia-all", "planet-maps", "planet-spectra", "mast"]
+
+[dev-dependencies]
+starfield.workspace = true
+starfield-datastore.workspace = true
+starfield-datasource-utils = { path = "../datasource-utils" }
+tempfile.workspace = true
+serde_json.workspace = true
+md5.workspace = true
 
 [dependencies]
 starfield-horizons = { path = "../horizons", optional = true }

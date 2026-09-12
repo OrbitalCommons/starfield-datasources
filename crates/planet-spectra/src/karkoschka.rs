@@ -19,9 +19,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use starfield::{Result, StarfieldError};
-use starfield_datasource_utils::{
-    download_to_file, ensure_cache_subdir, file_exists_and_not_empty,
-};
+use starfield_datastore::{Artifact, ArtifactKey, Datastore, Freshness, Provenance, Source};
 
 use crate::albedo::{AlbedoKind, SpectralAlbedo};
 use crate::body::SpectralBody;
@@ -32,8 +30,16 @@ const EMBEDDED_LOW_1995: &str = include_str!("../data/1995low.tab");
 /// Base URL of the `gbat_0001` data directory.
 pub const PDS_DATA_BASE_URL: &str = "https://pds-atmospheres.nmsu.edu/PDS/data/gbat_0001/data/";
 
-/// Cache subdirectory used for downloaded products.
-const CACHE_SUBDIR: &str = "karkoschka";
+/// Artifact key prefix. Archive-shaped rather than URL-shaped, so a relocated
+/// upstream changes a [`Source`] and not the cache layout or anyone's pin.
+const KEY_PREFIX: &str = "pds/gbat_0001";
+
+/// Where this crate cached products before the datastore seam.
+///
+/// Kept so an existing cache is adopted rather than orphaned — a user who
+/// already has these files should not re-download them because the storage
+/// layout changed underneath them.
+const LEGACY_CACHE_SUBDIR: &str = "karkoschka";
 
 /// Phase angle of the Jupiter column in the 1995 tables, per the PDS label.
 const JUPITER_PHASE_DEG: f64 = 6.8;
@@ -94,6 +100,30 @@ impl Product {
         }
     }
 
+    /// This product as a datastore [`Artifact`].
+    ///
+    /// `Immutable`: a numbered PDS volume file never changes. The default
+    /// content check rejects an HTML body, which is what an archive soft-404 or
+    /// a captive portal actually returns — verified against a live USGS
+    /// soft-404 during integration.
+    pub fn artifact(&self) -> Artifact {
+        Artifact::new(
+            ArtifactKey::new(format!("{KEY_PREFIX}/{}", self.file_name()))
+                .expect("static key is well-formed"),
+            vec![Source::new(self.url())],
+        )
+        .with_freshness(Freshness::Immutable)
+        .with_provenance(Provenance {
+            description: format!(
+                "Karkoschka spectrophotometry of the jovian planets and Titan, \
+                 PDS Atmospheres volume gbat_0001, {}",
+                self.file_name()
+            ),
+            license: "public-domain".into(),
+            citation: Some("Karkoschka 1998, Icarus 133, 134; PDS DOI 10.17189/2bp8-k793".into()),
+        })
+    }
+
     /// Provenance string recorded on every spectrum from this product.
     fn source(&self) -> &'static str {
         match self {
@@ -129,20 +159,42 @@ impl KarkoschkaTable {
         Self::parse(product, &text)
     }
 
-    /// Fetch a product into the starfield cache and parse it.
+    /// Resolve a product through `starfield-datastore` and parse it.
     ///
-    /// Re-parses the cached copy on subsequent calls rather than re-fetching.
+    /// Resolution is local cache, then the organisation mirror, and upstream
+    /// only when `STARFIELD_ALLOW_UPSTREAM=1` — so a working checkout depends on
+    /// one service rather than on the PDS Atmospheres node being up. Repeat
+    /// calls are served from disk.
+    ///
+    /// Use [`KarkoschkaTable::download_with`] to supply a configured store.
     pub fn download(product: Product) -> Result<Self> {
-        let path = Self::cached_path(product)?;
-        if !file_exists_and_not_empty(&path) {
-            download_to_file(&product.url(), &path, 60)?;
-        }
+        let store = Datastore::from_env()?;
+        // Adoption happens here and nowhere else. `download_with` stays
+        // hermetic so a caller who built a deliberately cold store gets one --
+        // see its docs.
+        let _ = adopt_legacy_cache(&store, product);
+        Self::download_with(&store, product)
+    }
+
+    /// As [`KarkoschkaTable::download`], against a caller-configured store.
+    ///
+    /// **Hermetic**: resolves through `store` and nothing else. It does not
+    /// consult the pre-seam cache directory, because a caller who deliberately
+    /// built a cold, mirrorless store — an upstream-rot canary, for instance —
+    /// must actually get one. Reaching into a global directory here would let a
+    /// stale file satisfy a test whose entire purpose is to contact the
+    /// archive.
+    ///
+    /// [`KarkoschkaTable::download`] performs legacy adoption before calling
+    /// this.
+    pub fn download_with(store: &Datastore, product: Product) -> Result<Self> {
+        let path = store.get(&product.artifact())?;
         Self::from_file(product, path)
     }
 
-    /// Where [`KarkoschkaTable::download`] puts a product.
-    pub fn cached_path(product: Product) -> Result<PathBuf> {
-        Ok(ensure_cache_subdir(CACHE_SUBDIR)?.join(product.file_name()))
+    /// Local path of a product if it is already cached, without fetching.
+    pub fn cached_path(store: &Datastore, product: Product) -> Option<PathBuf> {
+        store.peek(&product.artifact().key)
     }
 
     /// Parse the fixed-column ASCII body of a PDS table.
@@ -276,6 +328,44 @@ impl KarkoschkaTable {
     }
 }
 
+/// Import a pre-seam cached file into `store`, if one is present and the store
+/// does not already hold the artifact.
+///
+/// Before the datastore seam this crate cached products at
+/// `~/.cache/starfield/karkoschka/<file>`. Without adoption, the first call
+/// after upgrading would re-fetch a file the user already has — and an offline
+/// consumer, or one whose upstream has since died, would fail outright despite
+/// the data sitting on disk.
+fn adopt_legacy_cache(store: &Datastore, product: Product) -> bool {
+    adopt_legacy_cache_from(
+        store,
+        product,
+        &starfield_datasource_utils::cache_dir().join(LEGACY_CACHE_SUBDIR),
+    )
+}
+
+/// [`adopt_legacy_cache`] against an explicit directory, so the adoption path
+/// itself is testable rather than only the store's `import`.
+///
+/// The artifact is derived from `product` here rather than passed in, so a
+/// caller cannot pair a product with someone else's artifact.
+///
+/// Import runs the artifact's content check, so a truncated or wrong-kind
+/// legacy file is refused rather than promoted. Returns whether anything was
+/// adopted. Failure is not an error: nothing to adopt simply means the normal
+/// resolution chain proceeds.
+fn adopt_legacy_cache_from(store: &Datastore, product: Product, legacy_dir: &Path) -> bool {
+    let artifact = product.artifact();
+    if store.contains(&artifact.key) {
+        return false;
+    }
+    let legacy = legacy_dir.join(product.file_name());
+    if !starfield_datasource_utils::file_exists_and_not_empty(&legacy) {
+        return false;
+    }
+    store.import(&artifact, &legacy).is_ok()
+}
+
 /// What the archive's column for `body` actually measures, per the PDS label.
 fn albedo_kind(body: SpectralBody) -> AlbedoKind {
     match body {
@@ -292,6 +382,28 @@ fn albedo_kind(body: SpectralBody) -> AlbedoKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A store guaranteed to reach upstream on every call: an empty cache root,
+    /// no mirror, and upstream enabled programmatically rather than from the
+    /// environment.
+    ///
+    /// The two live tests below are **upstream-rot canaries** — they exist to
+    /// detect that a PDS URL has died or relocated, which is not hypothetical
+    /// (LP DAAC relocated its paths this year). Serving them from the mirror or
+    /// a warm cache would defeat them: the mirror would go on returning a copy
+    /// of a product whose upstream URL died years ago and the test would pass
+    /// forever.
+    ///
+    /// `allow_upstream` is set here rather than read from `STARFIELD_ALLOW_UPSTREAM`
+    /// so that a missing variable cannot turn the canary into a silent skip.
+    fn cold_upstream_store(dir: &std::path::Path) -> Datastore {
+        Datastore::builder()
+            .cache_root(dir.to_path_buf())
+            .without_mirror()
+            .allow_upstream(true)
+            .build()
+            .expect("build cold store")
+    }
 
     /// The first three and last rows of the vendored 1995low.tab, verbatim.
     const EXCERPT: &str = " 300.4  300.31   .0000 .2128 .2532 .5306 .6933 .0431\n\
@@ -431,6 +543,159 @@ mod tests {
         assert!(err.to_string().contains("declares 1875"), "{err}");
     }
 
+    /// An offline, mirrorless store: resolution has nowhere to go, so anything
+    /// that succeeds against it did so from the local cache.
+    fn offline_store(root: &std::path::Path) -> Datastore {
+        Datastore::builder()
+            .cache_root(root.to_path_buf())
+            .without_mirror()
+            .offline(true)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn adoption_imports_a_pre_seam_file_and_download_with_then_finds_it() {
+        // Exercises adopt_legacy_cache_from itself, not the store's import:
+        // delete the helper or point it at the wrong filename and this fails.
+        let legacy_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            legacy_dir.path().join(Product::Low1995.file_name()),
+            EMBEDDED_LOW_1995,
+        )
+        .unwrap();
+
+        let store_root = tempfile::tempdir().unwrap();
+        let store = offline_store(store_root.path());
+        let artifact = Product::Low1995.artifact();
+        assert!(!store.contains(&artifact.key), "store must start empty");
+
+        assert!(adopt_legacy_cache_from(
+            &store,
+            Product::Low1995,
+            legacy_dir.path()
+        ));
+        assert!(store.contains(&artifact.key));
+
+        let table = KarkoschkaTable::download_with(&store, Product::Low1995).unwrap();
+        assert_eq!(table.len(), Product::Low1995.expected_rows());
+    }
+
+    #[test]
+    fn adoption_refuses_a_corrupt_pre_seam_file() {
+        // An HTML body under a data filename is the realistic corruption: a
+        // login page saved by the older, unvalidated downloader. It must not be
+        // promoted into the store.
+        let legacy_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            legacy_dir.path().join(Product::Low1995.file_name()),
+            "<!DOCTYPE html><html><body>login</body></html>",
+        )
+        .unwrap();
+
+        let store_root = tempfile::tempdir().unwrap();
+        let store = offline_store(store_root.path());
+        assert!(!adopt_legacy_cache_from(
+            &store,
+            Product::Low1995,
+            legacy_dir.path()
+        ));
+        assert!(!store.contains(&Product::Low1995.artifact().key));
+    }
+
+    #[test]
+    fn adoption_is_a_no_op_when_there_is_nothing_to_adopt() {
+        let empty = tempfile::tempdir().unwrap();
+        let store_root = tempfile::tempdir().unwrap();
+        let store = offline_store(store_root.path());
+        assert!(!adopt_legacy_cache_from(
+            &store,
+            Product::Low1995,
+            empty.path()
+        ));
+    }
+
+    /// Child of [`download_with_ignores_a_discoverable_legacy_cache`].
+    ///
+    /// Runs with `HOME` pointing at a temp home that really does contain
+    /// `.cache/starfield/karkoschka/<product>`, so `cache_dir()` *can* find it.
+    /// That is the whole point: a hermeticity test that writes somewhere
+    /// `cache_dir()` never looks proves nothing, because reinstating adoption in
+    /// `download_with` would still pass on a machine with no global legacy file.
+    #[test]
+    #[ignore = "spawned as a child with a synthetic HOME; not standalone"]
+    fn hermetic_child() {
+        let legacy = starfield_datasource_utils::cache_dir()
+            .join(LEGACY_CACHE_SUBDIR)
+            .join(Product::Low1995.file_name());
+        assert!(
+            legacy.exists(),
+            "child setup is wrong: no legacy file at {}",
+            legacy.display()
+        );
+
+        let store_root = tempfile::tempdir().unwrap();
+        let store = offline_store(store_root.path());
+        assert!(
+            KarkoschkaTable::download_with(&store, Product::Low1995).is_err(),
+            "download_with adopted a discoverable legacy file; it must be hermetic"
+        );
+
+        // The same file IS adopted through the explicit path, so the child
+        // proves hermeticity rather than merely that nothing works.
+        assert!(adopt_legacy_cache(&store, Product::Low1995));
+        assert!(KarkoschkaTable::download_with(&store, Product::Low1995).is_ok());
+    }
+
+    #[test]
+    fn download_with_ignores_a_discoverable_legacy_cache() {
+        // Subprocess rather than mutating HOME in-process: the test harness runs
+        // threads in parallel and a process-global env change would leak into
+        // unrelated tests.
+        let home = tempfile::tempdir().unwrap();
+        let legacy_dir = home
+            .path()
+            .join(".cache")
+            .join("starfield")
+            .join(LEGACY_CACHE_SUBDIR);
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::write(
+            legacy_dir.join(Product::Low1995.file_name()),
+            EMBEDDED_LOW_1995,
+        )
+        .unwrap();
+
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "--ignored",
+                "--nocapture",
+                "karkoschka::tests::hermetic_child",
+            ])
+            .env("HOME", home.path())
+            .output()
+            .expect("spawn child test");
+        assert!(
+            out.status.success(),
+            "child failed:\n{}\n{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn artifact_keys_are_archive_shaped_not_url_shaped() {
+        // A relocated upstream must change a Source, not the cache layout or a
+        // pinned digest. LP DAAC relocated its paths this year, so this is the
+        // failure mode being designed against rather than a hypothetical.
+        let a = Product::Low1995.artifact();
+        assert_eq!(a.key.as_str(), "pds/gbat_0001/1995low.tab");
+        assert!(!a.key.as_str().contains("://"));
+        assert_eq!(a.sources.len(), 1);
+        assert!(a.sources[0].url.contains("pds-atmospheres.nmsu.edu"));
+        assert_eq!(a.freshness, Freshness::Immutable);
+    }
+
     #[test]
     fn urls_point_at_the_pds_volume() {
         assert_eq!(
@@ -440,18 +705,22 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "live upstream; bypasses the mirror. Detects archive rot, so it must not be re-pointed at the datastore"]
+    #[ignore = "live upstream; must bypass the mirror and cache. Detects archive rot, so a warm or mirrored resolve would defeat it"]
     fn downloads_and_parses_the_high_resolution_product() {
-        let t = KarkoschkaTable::download(Product::High1995).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = cold_upstream_store(dir.path());
+        let t = KarkoschkaTable::download_with(&store, Product::High1995).unwrap();
         assert_eq!(t.len(), 4750);
         let (lo, hi) = t.albedo(SpectralBody::Jupiter).unwrap().range_nm();
         assert!(lo >= 520.0 && hi <= 995.5, "range {lo}-{hi}");
     }
 
     #[test]
-    #[ignore = "live upstream; bypasses the mirror. Detects archive rot, so it must not be re-pointed at the datastore"]
+    #[ignore = "live upstream; must bypass the mirror and cache. Detects archive rot, so a warm or mirrored resolve would defeat it"]
     fn downloaded_1993_table_agrees_with_the_embedded_1995_one() {
-        let old = KarkoschkaTable::download(Product::Table1993).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = cold_upstream_store(dir.path());
+        let old = KarkoschkaTable::download_with(&store, Product::Table1993).unwrap();
         let new = KarkoschkaTable::load_embedded().unwrap();
         // Independent reductions three years apart: Uranus is spectrally stable,
         // so the two should agree to a few percent away from strong methane bands.

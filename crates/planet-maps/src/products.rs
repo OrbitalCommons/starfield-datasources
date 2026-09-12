@@ -15,9 +15,10 @@
 //! the sizes are from following the redirect.
 
 use starfield::{Result, StarfieldError};
-use starfield_datasource_utils::{
-    download_to_file, ensure_cache_subdir, file_exists_and_not_empty, verify_sha256,
+use starfield_datasource_utils::datastore::{
+    Artifact, ArtifactKey, ContentCheck, Datastore, Source,
 };
+use starfield_datasource_utils::{cache_dir, datastore_error, resolve_artifact};
 use starfield_reflectance_library::Endmember;
 
 use crate::grid::MapGrid;
@@ -96,9 +97,51 @@ impl MapProduct {
         }
     }
 
-    /// Where [`MapProduct::download`] puts the file.
+    /// Local blob path if cached; errors if it has not yet been resolved.
     pub fn cached_path(&self) -> Result<std::path::PathBuf> {
-        Ok(ensure_cache_subdir(CACHE_SUBDIR)?.join(self.file_name))
+        let store = Datastore::from_env().map_err(datastore_error)?;
+        store
+            .peek(&self.artifact(None)?.key)
+            .ok_or_else(|| StarfieldError::DataError(format!("{} is not cached", self.id)))
+    }
+
+    /// Declarative archive identity and kind check, also used by server manifests.
+    /// Approximate catalogue sizes are not enforced as exact byte pins.
+    pub fn artifact(&self, expected_sha256: Option<&str>) -> Result<Artifact> {
+        let (prefix, magic) = if self.file_name.ends_with(".jpg") {
+            ("nasa/blue-marble", vec![vec![0xff, 0xd8, 0xff]])
+        } else {
+            (
+                "usgs/mosaic",
+                vec![
+                    b"II*\0".to_vec(),
+                    b"MM\0*".to_vec(),
+                    b"II+\0".to_vec(),
+                    b"MM\0+".to_vec(),
+                ],
+            )
+        };
+        let mut checks = vec![
+            ContentCheck::default_binary(),
+            ContentCheck::magic(magic, false),
+        ];
+        if let Some(digest) = expected_sha256 {
+            if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(StarfieldError::DataError(
+                    "expected_sha256 must be 64 hexadecimal digits".into(),
+                ));
+            }
+            checks.push(ContentCheck::Sha256(digest.to_ascii_lowercase()));
+        }
+        let mut artifact = Artifact::new(
+            ArtifactKey::new(format!("{prefix}/{}", self.file_name)).map_err(datastore_error)?,
+            vec![Source::new(self.url())],
+        )
+        .with_check(ContentCheck::All(checks));
+        artifact.provenance.description = self.description.into();
+        artifact.provenance.license =
+            "US government work; USGS/NASA source attribution retained".into();
+        Ok(artifact)
     }
 
     /// Fetch into the starfield cache if not already present, returning the path.
@@ -108,20 +151,24 @@ impl MapProduct {
     ///
     /// `expected_sha256` is optional because the table does not yet carry
     /// digests: computing them means downloading ~25 GB. When supplied, the file
-    /// is verified and removed if it does not match, so a truncated download
-    /// cannot be silently reused on the next call.
+    /// is verified before publication. Rejected content is never installed.
     pub fn download(&self, expected_sha256: Option<&str>) -> Result<std::path::PathBuf> {
-        let path = self.cached_path()?;
-        if !file_exists_and_not_empty(&path) {
-            download_to_file(&self.url(), &path, 3600)?;
-        }
-        if let Some(expected) = expected_sha256 {
-            if let Err(e) = verify_sha256(&path, expected) {
-                let _ = std::fs::remove_file(&path);
-                return Err(e);
-            }
-        }
-        Ok(path)
+        let artifact = self.artifact(expected_sha256)?;
+        resolve_artifact(
+            &artifact,
+            Some(&cache_dir().join(CACHE_SUBDIR).join(self.file_name)),
+        )
+    }
+
+    /// Resolve using only the supplied store, without adopting global files.
+    pub fn download_with(
+        &self,
+        store: &Datastore,
+        expected_sha256: Option<&str>,
+    ) -> Result<std::path::PathBuf> {
+        store
+            .get(&self.artifact(expected_sha256)?)
+            .map_err(datastore_error)
     }
 
     /// Look up a product by [`MapProduct::id`].
@@ -366,12 +413,30 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "live upstream; bypasses the mirror. Detects archive rot, so it must not be re-pointed at the datastore"]
+    #[ignore = "live upstream; must bypass the mirror and cache. Detects archive rot, so a warm or mirrored resolve would defeat it"]
     fn pinned_urls_are_reachable() {
         for p in PRODUCTS {
             let client = starfield_datasource_utils::build_http_client(60).unwrap();
-            let response = client.head(p.url()).send();
-            assert!(response.is_ok(), "{}: {:?}", p.id, response.err());
+            let response = client
+                .head(p.url())
+                .send()
+                .and_then(|response| response.error_for_status())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{} live upstream failed (STARFIELD_ALLOW_UPSTREAM=1): {error}",
+                        p.id
+                    )
+                });
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("");
+            assert!(
+                !content_type.to_ascii_lowercase().contains("text/html"),
+                "{} returned an HTML catalogue instead of a mosaic",
+                p.id
+            );
         }
     }
 }

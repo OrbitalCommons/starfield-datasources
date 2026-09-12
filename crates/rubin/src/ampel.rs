@@ -1,6 +1,6 @@
 //! AMPEL alert broker client.
 //!
-//! [AMPEL](https://ampel.zeuthen.desy.de) (Alert Management, Photometry, and
+//! [AMPEL](https://ampel-ztf.zeuthen.desy.de) (Alert Management, Photometry, and
 //! Evaluation of Lightcurves) is a DESY-hosted modular framework for analyzing
 //! astronomical transient alerts.
 //!
@@ -13,11 +13,11 @@
 //! **Authentication:**
 //! - Catalog match: None required.
 //! - Archive: Bearer token required. Join the AMPEL GitHub org and generate a
-//!   token at <https://ampel.zeuthen.desy.de/live/dashboard/tokens>.
+//!   token at <https://ampel-ztf.zeuthen.desy.de/live/dashboard/tokens>.
 //!
 //! **Documentation:**
-//! - Catalog: <https://ampel.zeuthen.desy.de/api/catalogmatch/docs>
-//! - Archive: <https://ampel.zeuthen.desy.de/api/ztf/archive/v3/docs>
+//! - Catalog: <https://ampel-ztf.zeuthen.desy.de/api/catalogmatch/docs>
+//! - Archive: <https://ampel-ztf.zeuthen.desy.de/api/ztf/archive/v3/docs>
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -25,19 +25,19 @@ use starfield::{Result, StarfieldError};
 use starfield_datasource_utils::{build_http_client, check_response_status};
 
 /// Catalog match API URL.
-pub const CATALOG_API_URL: &str = "https://ampel.zeuthen.desy.de/api/catalogmatch";
+pub const CATALOG_API_URL: &str = "https://ampel-ztf.zeuthen.desy.de/api/catalogmatch";
 
 /// ZTF alert archive API URL (v3).
-pub const ARCHIVE_API_URL: &str = "https://ampel.zeuthen.desy.de/api/ztf/archive/v3";
+pub const ARCHIVE_API_URL: &str = "https://ampel-ztf.zeuthen.desy.de/api/ztf/archive/v3";
 
 /// Catalog match API documentation.
-pub const CATALOG_DOCS_URL: &str = "https://ampel.zeuthen.desy.de/api/catalogmatch/docs";
+pub const CATALOG_DOCS_URL: &str = "https://ampel-ztf.zeuthen.desy.de/api/catalogmatch/docs";
 
 /// Archive API documentation.
-pub const ARCHIVE_DOCS_URL: &str = "https://ampel.zeuthen.desy.de/api/ztf/archive/v3/docs";
+pub const ARCHIVE_DOCS_URL: &str = "https://ampel-ztf.zeuthen.desy.de/api/ztf/archive/v3/docs";
 
 /// Token management dashboard URL.
-pub const TOKEN_URL: &str = "https://ampel.zeuthen.desy.de/live/dashboard/tokens";
+pub const TOKEN_URL: &str = "https://ampel-ztf.zeuthen.desy.de/live/dashboard/tokens";
 
 /// A catalog cross-match result.
 #[derive(Debug, Deserialize)]
@@ -74,7 +74,7 @@ impl AmpelClient {
     /// Create a client with an archive bearer token.
     ///
     /// The token enables both catalog match and archive queries.
-    /// Generate a token at <https://ampel.zeuthen.desy.de/live/dashboard/tokens>.
+    /// Generate a token at <https://ampel-ztf.zeuthen.desy.de/live/dashboard/tokens>.
     pub fn with_archive_token(token: &str) -> Result<Self> {
         let client = build_http_client(30)?;
         Ok(Self {
@@ -178,11 +178,11 @@ mod tests {
     #[test]
     fn test_api_urls_match_docs() {
         assert!(
-            CATALOG_API_URL.contains("ampel.zeuthen.desy.de"),
+            CATALOG_API_URL.contains("ampel-ztf.zeuthen.desy.de"),
             "CATALOG_API_URL should point to AMPEL"
         );
         assert!(
-            ARCHIVE_API_URL.contains("ampel.zeuthen.desy.de"),
+            ARCHIVE_API_URL.contains("ampel-ztf.zeuthen.desy.de"),
             "ARCHIVE_API_URL should point to AMPEL"
         );
         assert!(
