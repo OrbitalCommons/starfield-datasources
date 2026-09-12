@@ -72,6 +72,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ => return Err("unknown Gaia release".into()),
                 }
             }
+            "--kernel" => {
+                let name = args.next().ok_or("--kernel needs an archive filename")?;
+                manifest.artifacts.push(starfield::data::kernel_artifact(&name)
+                    .ok_or("unknown kernel extension")?);
+            }
+            "--hipparcos" => manifest.artifacts.push(starfield::data::hipparcos_artifact()),
             "--mast" => {
                 let path = args.next().ok_or("--mast needs product JSON and a license")?;
                 let license = args.next().ok_or("--mast needs an explicit redistribution license")?;
@@ -83,7 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     manifest.artifacts.push(artifact);
                 }
             }
-            _ => return Err("usage: datastore_manifest [--base kernels.toml] [--gaia dr1|dr2|dr3 MD5SUM.txt] [--mast products.json LICENSE] > serve.toml".into()),
+            _ => return Err("usage: datastore_manifest [--base kernels.toml] [--kernel NAME] [--hipparcos] [--gaia dr1|dr2|dr3 MD5SUM.txt] [--mast products.json LICENSE] > serve.toml".into()),
         }
     }
     print!("{}", manifest.to_toml_string()?);

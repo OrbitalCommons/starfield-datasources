@@ -252,3 +252,31 @@ fn temporary_gaia_reader_uses_cache_filesystem_and_cleans_up_on_drop() {
     );
     assert_eq!(mirror.requests().len(), 2);
 }
+
+#[test]
+fn shared_url_identity_and_typed_errors_match_starfield() {
+    use starfield_datasource_utils::{artifact_from_url, datastore_error};
+    let kernel_url =
+        "https://naif.jpl.nasa.gov/pub/naif/generic_kernels/spk/planets/a_old_versions/de421.bsp";
+    assert_eq!(
+        artifact_from_url(kernel_url).unwrap().key,
+        starfield::data::kernel_artifact("de421.bsp").unwrap().key
+    );
+    let url = "https://example.org/archive.gz?product=1";
+    assert_eq!(
+        artifact_from_url(url).unwrap().key,
+        artifact_from_url(&format!("{url}#section")).unwrap().key
+    );
+    assert_eq!(
+        artifact_from_url(url).unwrap().key,
+        starfield::data::url_artifact(url).unwrap().key
+    );
+    assert!(artifact_from_url("https://user:secret@example.org/archive.gz").is_err());
+    let error = datastore_error(starfield_datastore::DatastoreError::Config(
+        "example".into(),
+    ));
+    assert!(matches!(
+        error,
+        starfield::StarfieldError::Datastore(starfield_datastore::DatastoreError::Config(_))
+    ));
+}

@@ -50,6 +50,8 @@ Export the same artifact descriptions used by clients:
 ```sh
 cargo run -p starfield-datasources --all-features --example datastore_manifest -- \
   --base path/to/ephemeris.toml --base manifests/build-inputs.toml \
+  --kernel de430t.bsp --kernel de405.bsp --kernel jup365.bsp \
+  --kernel moon_pa_de440_200625.bpc --hipparcos \
   --gaia dr1 path/to/dr1-MD5SUM.txt \
   --gaia dr2 path/to/dr2-MD5SUM.txt \
   --gaia dr3 path/to/dr3-_MD5SUM.txt > serve.toml

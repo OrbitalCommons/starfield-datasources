@@ -88,7 +88,12 @@ fn data_product_resolve_url_translates_mast_uri() {
         "expected MAST download endpoint, got: {}",
         url
     );
-    assert!(url.ends_with("uri=mast:HST/product/x.fits"));
+    let parsed = reqwest::Url::parse(&url).unwrap();
+    let pairs: Vec<_> = parsed.query_pairs().collect();
+    assert_eq!(
+        pairs,
+        vec![("uri".into(), "mast:HST/product/x.fits".into())]
+    );
 }
 
 #[test]

@@ -1,17 +1,18 @@
 //! Artifact resolution shared by archive clients. Query APIs use `http` instead.
 
 use starfield::{Result, StarfieldError};
-use starfield_datastore::{Artifact, ArtifactKey, ContentCheck, Datastore, DatastoreError, Source};
+use starfield_datastore::{Artifact, ContentCheck, Datastore, DatastoreError};
 use std::path::{Path, PathBuf};
 
 /// Convert datastore errors at the shared boundary.
 pub fn datastore_error(error: DatastoreError) -> StarfieldError {
-    StarfieldError::DataError(error.to_string())
+    StarfieldError::Datastore(error)
 }
 
 /// Construct an artifact for a caller-supplied URL without storing query secrets
 /// in its key. Archive APIs should prefer their own stable, named constructors.
 pub fn artifact_from_url(url: &str) -> Result<Artifact> {
+    let mut artifact = starfield::data::url_artifact(url)?;
     let parsed = url::Url::parse(url)
         .map_err(|_| StarfieldError::DataError("invalid artifact URL".into()))?;
     if !matches!(parsed.scheme(), "http" | "https")
@@ -22,9 +23,10 @@ pub fn artifact_from_url(url: &str) -> Result<Artifact> {
             "artifact URL must be HTTP(S) without userinfo".into(),
         ));
     }
-    let source = Source::new(url);
-    let identity = crate::sha256_bytes(url.as_bytes());
-    let key = ArtifactKey::new(format!("url/{identity}")).map_err(datastore_error)?;
+    // Preserve the core constructor's stronger checks for recognized kernels.
+    if !artifact.key.as_str().starts_with("url/") {
+        return Ok(artifact);
+    }
     let check = match parsed
         .path()
         .rsplit('.')
@@ -38,7 +40,8 @@ pub fn artifact_from_url(url: &str) -> Result<Artifact> {
         "bsp" => ContentCheck::magic(vec![b"DAF/SPK".to_vec(), b"NAIF/DAF".to_vec()], false),
         _ => ContentCheck::default_binary(),
     };
-    Ok(Artifact::new(key, vec![source]).with_check(check))
+    artifact.check = check;
+    Ok(artifact)
 }
 
 /// Adopt an explicitly supplied legacy path, validating it before publication.

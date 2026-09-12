@@ -168,7 +168,7 @@ impl KarkoschkaTable {
     ///
     /// Use [`KarkoschkaTable::download_with`] to supply a configured store.
     pub fn download(product: Product) -> Result<Self> {
-        let store = Datastore::from_env().map_err(to_starfield)?;
+        let store = Datastore::from_env()?;
         // Adoption happens here and nowhere else. `download_with` stays
         // hermetic so a caller who built a deliberately cold store gets one --
         // see its docs.
@@ -188,7 +188,7 @@ impl KarkoschkaTable {
     /// [`KarkoschkaTable::download`] performs legacy adoption before calling
     /// this.
     pub fn download_with(store: &Datastore, product: Product) -> Result<Self> {
-        let path = store.get(&product.artifact()).map_err(to_starfield)?;
+        let path = store.get(&product.artifact())?;
         Self::from_file(product, path)
     }
 
@@ -364,14 +364,6 @@ fn adopt_legacy_cache_from(store: &Datastore, product: Product, legacy_dir: &Pat
         return false;
     }
     store.import(&artifact, &legacy).is_ok()
-}
-
-/// Map a datastore error into the workspace error type.
-///
-/// The datastore deliberately carries its own error type — it must not depend
-/// on `starfield` — so the message is preserved rather than the variant.
-fn to_starfield(e: starfield_datastore::DatastoreError) -> StarfieldError {
-    StarfieldError::DataError(e.to_string())
 }
 
 /// What the archive's column for `body` actually measures, per the PDS label.

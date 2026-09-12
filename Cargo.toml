@@ -26,7 +26,7 @@ license = "MIT"
 repository = "https://github.com/OrbitalCommons/starfield-datasources"
 
 [workspace.dependencies]
-starfield = "0.16.1"
+starfield = { version = "0.16.2", features = ["datastore"] }
 starfield-datastore = "0.1.1"
 url = "2"
 tempfile = "3"
