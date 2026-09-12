@@ -79,11 +79,16 @@ pub fn materialize(blob: &Path, destination: &Path) -> Result<()> {
     std::fs::create_dir_all(parent)?;
     let temp = tempfile::NamedTempFile::new_in(parent)?;
     let path = temp.into_temp_path();
+    let staging_path = path.to_path_buf();
     std::fs::remove_file(&path)?;
     if std::fs::hard_link(blob, &path).is_err() {
         std::fs::copy(blob, &path)?;
     }
-    path.persist(destination)
-        .map_err(|error| StarfieldError::IoError(error.error))?;
-    Ok(())
+    let result = path
+        .persist(destination)
+        .map_err(|error| StarfieldError::IoError(error.error));
+    // POSIX rename of hard links to the same inode succeeds without removing
+    // the source. Repeated or concurrent publication must clean that link up.
+    let _ = std::fs::remove_file(staging_path);
+    result
 }

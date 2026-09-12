@@ -2,7 +2,7 @@
 //! Does not download artifact bodies. Gaia checksum lists and MAST product JSON
 //! are explicit inputs so an operator reviews the selected catalog and license.
 
-use starfield_datastore::Manifest;
+use starfield_datastore::{ContentCheck, Manifest};
 use starfield_gaia::{Downloader, Dr1, Dr2, Dr3, GaiaRelease};
 use starfield_mast::DataProduct;
 use starfield_planet_maps::PRODUCTS;
@@ -12,10 +12,14 @@ fn gaia<R: GaiaRelease>(
     manifest: &mut Manifest,
     path: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    manifest
-        .artifacts
-        .push(Downloader::<R>::artifact(R::MD5_FILENAME)?);
     let text = std::fs::read_to_string(path)?;
+    let mut checksum_artifact = Downloader::<R>::artifact(R::MD5_FILENAME)?;
+    checksum_artifact.expected_bytes = Some(text.len() as u64);
+    checksum_artifact.check = ContentCheck::All(vec![
+        checksum_artifact.check,
+        ContentCheck::Sha256(starfield_datasource_utils::sha256_bytes(text.as_bytes())),
+    ]);
+    manifest.artifacts.push(checksum_artifact);
     let mut count = 0;
     for line in text.lines() {
         let fields: Vec<_> = line.split_whitespace().collect();

@@ -164,3 +164,91 @@ fn mast_product_identity_and_mirror_fit_validation() {
     opaque.data_uri = Some("mast:HST/product/test_1&part=2.fits".into());
     assert_ne!(opaque_artifact.key, opaque.artifact().unwrap().key);
 }
+
+#[test]
+fn repeated_and_concurrent_alias_publication_leaves_no_scratch_links() {
+    let root = tempfile::tempdir().unwrap();
+    let blob = root.path().join("blob");
+    let alias = root.path().join("alias.gz");
+    std::fs::write(&blob, vec![42u8; 2048]).unwrap();
+    materialize(&blob, &alias).unwrap();
+    materialize(&blob, &alias).unwrap();
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| materialize(&blob, &alias).unwrap());
+        }
+    });
+    assert_eq!(
+        std::fs::read(&alias).unwrap(),
+        std::fs::read(&blob).unwrap()
+    );
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 2);
+}
+
+#[test]
+fn temporary_gaia_reader_uses_cache_filesystem_and_cleans_up_on_drop() {
+    const CHILD: &str = "SFD_TEMPORARY_READER_CHILD";
+    const FILE: &str = "GaiaSource_temporary.csv.gz";
+    if std::env::var_os(CHILD).is_some() {
+        use std::collections::BTreeSet;
+        use std::io::Read;
+        let store = Datastore::from_env().unwrap();
+        let contents = || -> BTreeSet<_> {
+            std::fs::read_dir(store.cache_root())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect()
+        };
+        let before = contents();
+        let mut reader = Downloader::<Dr3>::stream_file(FILE).unwrap();
+        let during = contents();
+        let scratch: Vec<_> = during.difference(&before).collect();
+        assert_eq!(scratch.len(), 1, "scratch lives under cache root");
+        assert!(scratch[0].is_dir());
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).unwrap();
+        assert_eq!(bytes.len(), 2048);
+        assert_eq!(&bytes[..2], &[0x1f, 0x8b]);
+        assert!(
+            store.keys().unwrap().is_empty(),
+            "no persistent shard or alias"
+        );
+        drop(reader);
+        assert_eq!(contents(), before, "temporary store removed on drop");
+        return;
+    }
+    let mirror = Stub::start("127.0.0.1");
+    let root = tempfile::tempdir().unwrap();
+    let mut bytes = vec![0u8; 2048];
+    bytes[..2].copy_from_slice(&[0x1f, 0x8b]);
+    mirror.route(
+        "/artifact/gaia/dr3/gaia_source/_MD5SUM.txt",
+        Response::ok(format!("{:x}  {FILE}\n", md5::compute(&bytes))),
+    );
+    mirror.route(
+        &format!("/artifact/gaia/dr3/gaia_source/{FILE}"),
+        Response::ok(bytes),
+    );
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "temporary_gaia_reader_uses_cache_filesystem_and_cleans_up_on_drop",
+            "--nocapture",
+        ])
+        .env_clear()
+        .env(CHILD, "1")
+        .env("HOME", root.path())
+        .env("STARFIELD_CACHE_DIR", root.path().join("cache"))
+        .env("STARFIELD_MIRROR", mirror.url())
+        .env("STARFIELD_ALLOW_UPSTREAM", "0")
+        .env("TMPDIR", root.path().join("nonexistent-os-temp"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(mirror.requests().len(), 2);
+}
