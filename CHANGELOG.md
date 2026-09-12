@@ -2,6 +2,10 @@
 
 ## Pull-through cache rollout — facade 0.13.1
 
+- Rubin 0.1.1 updates AMPEL endpoints to the hostname in the project's
+  [current service documentation](https://ampelproject.github.io/astronomy/ztf/index).
+  Live broker URL checks continue to fail on unavailable services.
+
 - Gaia 0.2.1; datasource-utils, gaia-tools, Hipparcos, MAST, planet-maps and
   planet-spectra 0.1.1 resolve named archive files through starfield-datastore.
   Set `STARFIELD_MIRROR=http://cf-services.tail944341.ts.net:8080`; upstream
