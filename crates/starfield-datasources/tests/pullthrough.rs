@@ -280,3 +280,49 @@ fn shared_url_identity_and_typed_errors_match_starfield() {
         starfield::StarfieldError::Datastore(starfield_datastore::DatastoreError::Config(_))
     ));
 }
+
+#[test]
+#[ignore = "live mirror; requires STARFIELD_MIRROR and bypasses local cache; upstream disabled"]
+fn live_mirror_serves_core_pds_and_gaia_from_empty_client_caches() {
+    use starfield_planet_spectra::{KarkoschkaTable, Product};
+    let mirror = std::env::var("STARFIELD_MIRROR")
+        .expect("set STARFIELD_MIRROR to run the live mirror integration test");
+    let mut previous = None;
+    for _ in 0..2 {
+        let root = tempfile::tempdir().unwrap();
+        let store = Datastore::builder()
+            .cache_root(root.path().to_path_buf())
+            .mirror(Mirror::Http {
+                base_url: mirror.clone(),
+                writable: false,
+            })
+            .allow_upstream(false)
+            .progress(false)
+            .build()
+            .unwrap();
+        let product = Product::High1995;
+        let table = KarkoschkaTable::download_with(&store, product).unwrap();
+        assert_eq!(table.len(), product.expected_rows());
+        let path = KarkoschkaTable::cached_path(&store, product).unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        if let Some(previous) = previous.replace(bytes.clone()) {
+            assert_eq!(
+                bytes, previous,
+                "separate cold clients get identical PDS bytes"
+            );
+        }
+        let lsk = starfield::data::download_or_cache_with(&store, "naif0012.tls").unwrap();
+        assert_eq!(
+            sha256_bytes(&std::fs::read(lsk).unwrap()),
+            "678e32bdb5a744117a467cd9601cd6b373f0e9bc9bbde1371d5eee39600a039b"
+        );
+        let shards = Downloader::<Dr3>::list_remote_with(&store).unwrap();
+        assert_eq!(shards.len(), 3386);
+        for key in store.keys().unwrap() {
+            assert_eq!(
+                store.entry(&key).unwrap().layer,
+                starfield_datastore::Layer::Mirror
+            );
+        }
+    }
+}
