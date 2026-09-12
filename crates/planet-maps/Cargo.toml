@@ -1,6 +1,6 @@
 [package]
 name = "starfield-planet-maps"
-version = "0.1.0"
+version = "0.1.1"
 description = "Equirectangular planetary albedo maps in body-fixed coordinates, with explicit archive conventions"
 edition.workspace = true
 license.workspace = true

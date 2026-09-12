@@ -22,7 +22,18 @@ jobs:
         run: cargo check --workspace --all-features
 
       - name: Run tests
-        run: cargo test --workspace
+        run: cargo test --workspace --all-features
+
+      - name: Clippy
+        run: |
+          cargo clippy --workspace --all-features -- -D warnings
+          cargo clippy -p starfield-datasource-utils -p starfield-gaia -p starfield-hipparcos -p starfield-mast -p starfield-planet-maps -p starfield-planet-spectra -p starfield-datasources --all-targets --all-features -- -D warnings
+
+      - name: Check minimal facade
+        run: cargo check -p starfield-datasources --no-default-features
+
+      - name: Check build input scripts
+        run: python3 -m py_compile crates/reflectance-library/scripts/build_table.py crates/solar-spectrum/scripts/build_table.py
 
       - name: Check formatting
         run: cargo fmt --all -- --check

@@ -1,6 +1,6 @@
 [package]
 name = "starfield-hipparcos"
-version = "0.1.0"
+version = "0.1.1"
 description = "Hipparcos star catalog loader and downloader"
 edition.workspace = true
 license.workspace = true

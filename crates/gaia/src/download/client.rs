@@ -8,9 +8,12 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 use starfield::{Result, StarfieldError};
+use starfield_datasource_utils::artifact::materialize;
+use starfield_datasource_utils::datastore::{
+    Artifact, ArtifactKey, ContentCheck, Datastore, DatastoreBuilder, Source,
+};
 use starfield_datasource_utils::{
-    build_http_client, cache_dir, check_response_status, download_to_file,
-    file_exists_and_not_empty,
+    adopt_legacy, build_http_client, cache_dir, check_response_status, datastore_error,
 };
 
 use crate::common::traits::GaiaRelease;
@@ -21,6 +24,40 @@ pub struct Downloader<R: GaiaRelease> {
 }
 
 impl<R: GaiaRelease> Downloader<R> {
+    /// Named immutable release artifact, shared with the mirror manifest.
+    pub fn artifact(filename: &str) -> Result<Artifact> {
+        if filename.is_empty()
+            || filename.contains(['/', '\\'])
+            || filename == "."
+            || filename == ".."
+        {
+            return Err(StarfieldError::DataError(
+                "Gaia filename must be a bare filename".into(),
+            ));
+        }
+        let check = if filename.ends_with(".gz") {
+            ContentCheck::All(vec![
+                ContentCheck::default_binary(),
+                ContentCheck::magic(vec![vec![0x1f, 0x8b]], false),
+            ])
+        } else {
+            ContentCheck::All(vec![ContentCheck::NotHtml, ContentCheck::MinBytes(1)])
+        };
+        let mut artifact = Artifact::new(
+            ArtifactKey::new(format!(
+                "gaia/{}/gaia_source/{filename}",
+                R::RELEASE.as_str().to_ascii_lowercase()
+            ))
+            .map_err(datastore_error)?,
+            vec![Source::new(format!("{}{filename}", R::BASE_URL))],
+        )
+        .with_check(check);
+        artifact.provenance.description = format!("ESA Gaia {} {filename}", R::RELEASE.as_str());
+        artifact.provenance.license =
+            "ESA Gaia archive data; acknowledge Gaia and DPAC under the release citation policy"
+                .into();
+        Ok(artifact)
+    }
     /// Cache directory this release uses, e.g. `~/.cache/starfield/gaia/dr3`.
     pub fn cache_dir() -> PathBuf {
         cache_dir().join(R::CACHE_SUBDIR)
@@ -132,18 +169,26 @@ impl<R: GaiaRelease> Downloader<R> {
     pub fn checksums() -> Result<HashMap<String, String>> {
         let dir = Self::ensure_cache_dir()?;
         let md5_path = dir.join(R::MD5_FILENAME);
-        if !file_exists_and_not_empty(&md5_path) {
-            let url = format!("{}{}", R::BASE_URL, R::MD5_FILENAME);
-            download_to_file(&url, &md5_path, 600)?;
-        }
+        let store = Datastore::from_env().map_err(datastore_error)?;
+        adopt_legacy(&store, &Self::artifact(R::MD5_FILENAME)?, &md5_path)?;
+        Self::checksums_with(&store)
+    }
 
-        let file = File::open(&md5_path).map_err(StarfieldError::IoError)?;
+    /// Read release checksums using only the supplied store.
+    pub fn checksums_with(store: &Datastore) -> Result<HashMap<String, String>> {
+        let path = store
+            .get(&Self::artifact(R::MD5_FILENAME)?)
+            .map_err(datastore_error)?;
+        let file = File::open(path)?;
         let mut map = HashMap::new();
         for line in BufReader::new(file).lines() {
             let line = line.map_err(StarfieldError::IoError)?;
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let checksum = parts[0].to_string();
+            if parts.len() >= 2
+                && parts[0].len() == 32
+                && parts[0].bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                let checksum = parts[0].to_ascii_lowercase();
                 let name = parts[1].trim_start_matches('*').to_string();
                 map.insert(name, checksum);
             }
@@ -153,44 +198,78 @@ impl<R: GaiaRelease> Downloader<R> {
 
     /// Download a single CSV.gz file, verify its MD5, return the cached path.
     pub fn download_file(filename: &str) -> Result<PathBuf> {
+        let artifact = Self::artifact(filename)?;
         let dir = Self::ensure_cache_dir()?;
         let dest = dir.join(filename);
-        if file_exists_and_not_empty(&dest) {
-            return Ok(dest);
-        }
+        let store = Datastore::from_env().map_err(datastore_error)?;
+        adopt_legacy(&store, &artifact, &dest)?;
+        adopt_legacy(
+            &store,
+            &Self::artifact(R::MD5_FILENAME)?,
+            &dir.join(R::MD5_FILENAME),
+        )?;
+        let blob = Self::download_file_with(&store, filename)?;
+        materialize(&blob, &dest)?;
+        Ok(dest)
+    }
 
-        let url = format!("{}{}", R::BASE_URL, filename);
-        download_to_file(&url, &dest, 600)?;
-
-        let checksums = Self::checksums()?;
-        if let Some(expected) = checksums.get(filename) {
-            let actual = md5_hex(&dest)?;
-            if actual != *expected {
-                return Err(StarfieldError::DataError(format!(
-                    "md5 mismatch for {}: expected {}, got {}",
-                    filename, expected, actual
-                )));
-            }
+    /// Fetch and verify using only the supplied store; no ambient legacy files.
+    pub fn download_file_with(store: &Datastore, filename: &str) -> Result<PathBuf> {
+        let artifact = Self::artifact(filename)?;
+        let checksums = Self::checksums_with(store)?;
+        let expected = checksums.get(filename).ok_or_else(|| {
+            StarfieldError::DataError(format!(
+                "{filename} is absent from the Gaia release checksum manifest"
+            ))
+        })?;
+        let dest = store.get(&artifact).map_err(datastore_error)?;
+        let actual = md5_hex(&dest)?;
+        if actual != *expected {
+            store.remove(&artifact.key).map_err(datastore_error)?;
+            return Err(StarfieldError::DataError(format!(
+                "md5 mismatch for {}: expected {}, got {}",
+                filename, expected, actual
+            )));
         }
         Ok(dest)
     }
 
-    /// Open a streaming HTTP read of a catalog file — returns a `Box<dyn Read>`
-    /// over the gzipped bytes. Use with [`CsvSourceReader::from_reader`](crate::common::reader::CsvSourceReader::from_reader)
-    /// to excerpt without ever writing the raw file to disk. Caller is
+    /// Open a read of a validated catalog file. The complete download is checked
+    /// in an isolated temporary store before reading; disk use is bounded by one
+    /// file and reclaimed when the reader is dropped. Memory does not grow with
+    /// the artifact. Use with [`CsvSourceReader::from_reader`](crate::common::reader::CsvSourceReader::from_reader).
+    /// Caller is
     /// responsible for setting `is_gz=true` since CSV.gz is the only on-disk
     /// format Gaia publishes for `gaia_source`.
     pub fn stream_file(filename: &str) -> Result<Box<dyn Read + Send>> {
-        let url = format!("{}{}", R::BASE_URL, filename);
-        let client = build_http_client(600)?;
-        let resp = check_response_status(
-            client
-                .get(&url)
-                .send()
-                .map_err(|e| StarfieldError::DataError(format!("HTTP get {}: {}", url, e)))?,
-            &url,
-        )?;
-        Ok(Box::new(resp))
+        // Keep multi-GB scratch on the configured cache filesystem, not TMPDIR.
+        let root_store = Datastore::from_env().map_err(datastore_error)?;
+        let scratch = tempfile::tempdir_in(root_store.cache_root())?;
+        let store = DatastoreBuilder::from_env()
+            .map_err(datastore_error)?
+            .cache_root(scratch.path().to_path_buf())
+            .build()
+            .map_err(datastore_error)?;
+        let path = Self::download_file_with(&store, filename)?;
+        Ok(Box::new(TemporaryCatalog {
+            file: File::open(path)?,
+            _directory: scratch,
+        }))
+    }
+
+    /// Explicitly evict a raw file and its filename alias after excerpting.
+    pub fn remove_cached(filename: &str) -> Result<()> {
+        let artifact = Self::artifact(filename)?;
+        Datastore::from_env()
+            .map_err(datastore_error)?
+            .remove(&artifact.key)
+            .map_err(datastore_error)?;
+        let path = Self::cache_dir().join(filename);
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Download every catalog file (optionally up to `max_files`). Failures on
@@ -215,6 +294,17 @@ impl<R: GaiaRelease> Downloader<R> {
             }
         }
         Ok(out)
+    }
+}
+
+struct TemporaryCatalog {
+    file: File,
+    _directory: tempfile::TempDir,
+}
+
+impl Read for TemporaryCatalog {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        self.file.read(bytes)
     }
 }
 

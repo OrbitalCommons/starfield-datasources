@@ -1,5 +1,30 @@
 # Changelog
 
+## Pull-through cache rollout — facade 0.13.1
+
+- Gaia 0.2.1; datasource-utils, gaia-tools, Hipparcos, MAST, planet-maps and
+  planet-spectra 0.1.1 resolve named archive files through starfield-datastore.
+  Set `STARFIELD_MIRROR=http://cf-services.tail944341.ts.net:8080`; upstream
+  downloads require an explicit `STARFIELD_ALLOW_UPSTREAM=1` opt-in.
+- Existing files are validated before adoption; caller-configured `_with`
+  methods never discover the global legacy cache. Wrong HTML, signatures,
+  size pins and optional SHA256 pins are rejected. Gaia checks MD5 on hits too.
+- Gaia's ordinary downloader retains `.csv.gz` filename aliases for parsers;
+  explicit cleanup removes both alias and datastore entry. `stream_file` now
+  validates a complete file on the cache filesystem before reading, then
+  removes temporary storage when the reader closes. It no longer exposes an
+  unvalidated HTTP response; memory remains bounded for large shards.
+- `MapProduct::cached_path` now errors on a cache miss rather than predicting
+  a flat filename. `KarkoschkaTable::cached_path` now takes `&Datastore` and
+  returns `Option<PathBuf>`; downloaded paths can be content-addressed.
+- The USGS spectral-library regeneration script uses the datastore CLI and
+  checked-in build-input manifest instead of buffering an archive download.
+- A manifest exporter shares the client artifact constructors, supports Gaia
+  checksum lists and explicit MAST product registrations. A served allow-list
+  must remain separate from the small scheduled prewarm manifest.
+- Live query APIs, upstream-rot canaries, and the documented NSA broken-TLS
+  downloader stay direct. See `docs/pullthrough-cache.md` for the full audit.
+
 ## Unreleased — datastore seam
 
 ### starfield-planet-spectra (breaking)

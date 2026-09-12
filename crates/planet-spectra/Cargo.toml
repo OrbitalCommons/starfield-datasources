@@ -1,6 +1,6 @@
 [package]
 name = "starfield-planet-spectra"
-version = "0.1.0"
+version = "0.1.1"
 description = "Spectral geometric albedos of the planets, Titan and the major moons, for resolved-body rendering"
 edition.workspace = true
 license.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 [dependencies]
 starfield = { workspace = true }
 starfield-datasource-utils = { version = "0.1.0", path = "../datasource-utils" }
-starfield-datastore = "0.1.0"
+starfield-datastore.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

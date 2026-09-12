@@ -6,9 +6,10 @@
 //! ```
 //!
 //! These tests download real HST data products (small ones, but
-//! still — expect a few MB per run). Per-product cache hits make
-//! re-runs essentially free.
+//! still — expect a few MB per run). Each run uses a fresh mirror-free store
+//! so a cached product cannot hide upstream archive rot.
 
+use starfield_datasource_utils::datastore::Datastore;
 use starfield_gaia::Cone;
 use starfield_mast::{MastClient, Wcs};
 
@@ -45,7 +46,14 @@ fn end_to_end_m101_cone_search_and_first_drz_download() {
         science.filename,
         science.size_bytes.unwrap_or(0)
     );
-    let path = client.download_product(science).expect("download");
+    let cache = tempfile::tempdir().unwrap();
+    let store = Datastore::builder()
+        .cache_root(cache.path().to_path_buf())
+        .without_mirror()
+        .allow_upstream(true)
+        .build()
+        .unwrap();
+    let path = client.download_product_with(&store, science).expect("download from live upstream; STARFIELD_ALLOW_UPSTREAM=1 is required outside this explicit canary");
     eprintln!("  cached at: {}", path.display());
 
     // Parse the WCS and dump pointing + footprint.

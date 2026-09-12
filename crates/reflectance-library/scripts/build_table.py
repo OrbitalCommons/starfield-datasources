@@ -20,13 +20,15 @@ import io
 import os
 import re
 import sys
-import urllib.request
+import subprocess
+from pathlib import Path
 import zipfile
 
 ITEM = "586e8c88e4b0f5ce109fccae"
-CATALOG_JSON = f"https://www.sciencebase.gov/catalog/item/{ITEM}?format=json"
 ARCHIVE_NAME = "ASCIIdata_splib07a.zip"
 CACHE = os.path.expanduser("~/.cache/splib07/a.zip")
+MANIFEST = Path(__file__).resolve().parents[3] / "manifests/build-inputs.toml"
+ARTIFACT_KEY = "usgs/splib07/ASCIIdata_splib07a.zip"
 
 # splib07 marks deleted/invalid channels with a large negative sentinel.
 DELETED_MARKER = -1e30
@@ -69,26 +71,17 @@ ENDMEMBERS = [
 ]
 
 
-def archive_url():
-    with urllib.request.urlopen(CATALOG_JSON, timeout=120) as response:
-        import json
-
-        for f in json.load(response).get("files", []):
-            if f.get("name") == ARCHIVE_NAME:
-                return f["url"]
-    raise SystemExit(f"{ARCHIVE_NAME} not found in ScienceBase item {ITEM}")
-
-
 def ensure_archive():
-    if os.path.exists(CACHE) and os.path.getsize(CACHE) > 1_000_000:
-        return CACHE
-    os.makedirs(os.path.dirname(CACHE), exist_ok=True)
-    url = archive_url()
-    print(f"downloading {ARCHIVE_NAME}...", file=sys.stderr)
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=600) as response, open(CACHE, "wb") as out:
-        out.write(response.read())
-    return CACHE
+    """Resolve through the Rust CLI (streaming, validated, mirror aware)."""
+    command = ["starfield-datastore"]
+    selection = ["--manifest", str(MANIFEST), "--key", ARTIFACT_KEY]
+    if os.path.isfile(CACHE):
+        # A failed legacy validation must not bypass the normal resolution path.
+        subprocess.run(command + ["import", *selection, "--from", CACHE],
+                       stdout=subprocess.DEVNULL, check=False)
+    result = subprocess.run(command + ["fetch", *selection], check=True,
+                            stdout=subprocess.PIPE, text=True)
+    return result.stdout.strip()
 
 
 def read_column(z, path):

@@ -121,7 +121,7 @@ fn run_release<R: GaiaRelease>(args: &Cli) -> Result<()> {
             if args.cache_raw {
                 "writing raw to cache"
             } else {
-                "streaming, no raw on disk"
+                "validated temporary download, removed after reading"
             },
             if parallel {
                 format!(", {} download workers", args.download_workers)
@@ -137,10 +137,7 @@ fn run_release<R: GaiaRelease>(args: &Cli) -> Result<()> {
         for name in names.iter().take(total_files) {
             if already_processed.contains(name) {
                 if args.cache_raw && args.clean_after_excerpt {
-                    let path = Downloader::<R>::cache_dir().join(name);
-                    if path.exists() {
-                        let _ = std::fs::remove_file(&path);
-                    }
+                    Downloader::<R>::remove_cached(name)?;
                 }
                 skipped_resume += 1;
             } else {
@@ -295,7 +292,7 @@ where
                         excerpt_csv_file_into::<R, _, _>(&path, mag_limit, writer, &mut *predicate);
                     // Evict cached raw only after a successful extract+commit.
                     if extract.is_ok() && args.clean_after_excerpt {
-                        if let Err(e) = std::fs::remove_file(&path) {
+                        if let Err(e) = Downloader::<R>::remove_cached(name) {
                             eprintln!(
                                 "[{}/{}] {}: warn: extract ok but failed to evict {}: {}",
                                 idx + 1,
@@ -354,7 +351,7 @@ where
 /// Result of a single CDN download attempt, sent from worker threads to the
 /// extract thread. The raw bytes are already on disk at `path` when `res` is
 /// `Ok`; on `Err`, the file was never produced (or a partial tmp was cleaned
-/// up by `download_to_file`'s atomic-rename guarantee).
+/// up by the datastore's validate-before-publication guarantee).
 struct DownloadOutcome {
     name: String,
     res: std::result::Result<PathBuf, String>,
@@ -410,7 +407,7 @@ fn run_parallel_cdn<R: GaiaRelease>(
                     Ok(rows) => {
                         *input_rows_total += rows;
                         if args.clean_after_excerpt {
-                            if let Err(e) = std::fs::remove_file(&path) {
+                            if let Err(e) = Downloader::<R>::remove_cached(&item.name) {
                                 eprintln!(
                                     "{}: warn: extract ok but failed to evict {}: {}",
                                     item.name,
