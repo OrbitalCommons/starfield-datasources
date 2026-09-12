@@ -6,15 +6,12 @@ use std::io::{BufRead, BufReader, Read};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
-use regex::Regex;
 use starfield::{Result, StarfieldError};
 use starfield_datasource_utils::artifact::materialize;
 use starfield_datasource_utils::datastore::{
     Artifact, ArtifactKey, ContentCheck, Datastore, DatastoreBuilder, Source,
 };
-use starfield_datasource_utils::{
-    adopt_legacy, build_http_client, cache_dir, check_response_status, datastore_error,
-};
+use starfield_datasource_utils::{adopt_legacy, cache_dir, datastore_error};
 
 use crate::common::traits::GaiaRelease;
 
@@ -69,82 +66,32 @@ impl<R: GaiaRelease> Downloader<R> {
         Ok(dir)
     }
 
-    /// List the filenames of every CSV file the remote index exposes.
-    ///
-    /// ESA's user-facing URL (`cdn.gea.esac.esa.int`) is just a JS-rendered
-    /// file browser shell, so we paginate the underlying CDN77 S3-style XML
-    /// listing instead. Returns filenames matching `R::FILE_REGEX`, sorted
-    /// and deduplicated.
+    /// List the release's shards from its immutable MD5 manifest. Discovery
+    /// uses the same local/mirror chain as the files, without a live listing.
     pub fn list_remote() -> Result<Vec<String>> {
-        const CDN_HOST: &str = "https://cdn.gea.esac.esa.int/";
-        const INDEX_HOST: &str = "https://gaia.eu-1.cdn77-storage.com/";
-        let prefix = R::BASE_URL
-            .strip_prefix(CDN_HOST)
-            .ok_or_else(|| {
-                StarfieldError::DataError(format!(
-                    "BASE_URL {} doesn't start with the expected CDN host {}",
-                    R::BASE_URL,
-                    CDN_HOST
-                ))
-            })?
-            .to_string();
+        Self::shard_names(Self::checksums()?)
+    }
 
-        let client = build_http_client(60)?;
-        let re = Regex::new(R::FILE_REGEX).map_err(|e| {
-            StarfieldError::DataError(format!(
-                "compile file regex for {}: {}",
-                R::RELEASE.as_str(),
-                e
-            ))
-        })?;
+    /// Enumerate shards using only the caller's store, including offline hits.
+    pub fn list_remote_with(store: &Datastore) -> Result<Vec<String>> {
+        Self::shard_names(Self::checksums_with(store)?)
+    }
 
-        let mut all = std::collections::BTreeSet::new();
-        let mut marker = String::new();
-        for _page in 0..50 {
-            let url = if marker.is_empty() {
-                format!("{}?prefix={}&delimiter=/", INDEX_HOST, prefix)
-            } else {
-                format!(
-                    "{}?prefix={}&delimiter=/&marker={}",
-                    INDEX_HOST,
-                    prefix,
-                    urlencode(&marker),
-                )
-            };
-            let resp = check_response_status(
-                client.get(&url).send().map_err(|e| {
-                    StarfieldError::DataError(format!("fetch {} index: {}", R::RELEASE.as_str(), e))
-                })?,
-                &format!("Gaia {} index page", R::RELEASE.as_str()),
-            )?;
-            let body = resp
-                .text()
-                .map_err(|e| StarfieldError::DataError(format!("read index body: {}", e)))?;
-
-            let mut last_key = String::new();
-            for cap in re.captures_iter(&body) {
-                if let Some(m) = cap.get(1) {
-                    let name = m.as_str().to_string();
-                    last_key = format!("{}{}", prefix, name);
-                    all.insert(name);
-                }
-            }
-            let truncated = body.contains("<IsTruncated>true</IsTruncated>");
-            if !truncated || last_key.is_empty() {
-                break;
-            }
-            marker = last_key;
+    fn shard_names(checksums: HashMap<String, String>) -> Result<Vec<String>> {
+        let mut names: Vec<_> = checksums
+            .into_keys()
+            .filter(|name| name.ends_with(".csv.gz"))
+            .collect();
+        for name in &names {
+            Self::artifact(name)?;
         }
-
-        if all.is_empty() {
-            return Err(StarfieldError::DataError(format!(
-                "no files matched FILE_REGEX for {} at {} (prefix {})",
-                R::RELEASE.as_str(),
-                INDEX_HOST,
-                prefix,
-            )));
+        if names.is_empty() {
+            return Err(StarfieldError::DataError(
+                "Gaia checksum manifest lists no CSV.gz shards".into(),
+            ));
         }
-        Ok(all.into_iter().collect())
+        names.sort();
+        Ok(names)
     }
 
     /// Cached files on disk for this release.
@@ -306,19 +253,6 @@ impl Read for TemporaryCatalog {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
         self.file.read(bytes)
     }
-}
-
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => out.push_str(&format!("%{:02X}", b)),
-        }
-    }
-    out
 }
 
 fn md5_hex(path: &Path) -> Result<String> {

@@ -38,7 +38,8 @@ cleanup; `gaia-excerpt --clean-after-excerpt` uses it for downloaded inputs.
 `stream_file` uses one temporary artifact store on the configured cache
 filesystem, validates the full shard before returning a reader, and removes
 the temporary directory on drop. Budget disk for a complete shard even without
-`--cache-raw`; memory is bounded independently of file size.
+`--cache-raw`; memory is bounded independently of file size. This path creates
+no filename alias; `remove_cached` applies to the ordinary downloader's cache.
 
 ## Server registration
 
@@ -62,7 +63,8 @@ and redistribution terms must be reviewed before registration; an empty
 license blocks server redistribution. Archive kind checks remain mandatory
 even when a SHA256 pin has not yet been measured.
 
-Deploy the generated allow-list as the **served manifest**. Keep the **prewarm
+Deploy the generated allow-list as the **served manifest**, for `serve` only.
+Never pass this manifest to `mirror`: that would download terabytes. Keep the **prewarm
 manifest** limited to the curated small kernels: never schedule the full Gaia
 catalogue or multi-GB mosaics for nightly prewarming. New MAST observations
 require a reviewed registration; they are not automatically authorized by a
@@ -79,7 +81,8 @@ python3 crates/reflectance-library/scripts/build_table.py > regenerated.csv
 ## Direct network calls retained after the audit
 
 - HORIZONS, SBDB, MPC, Rubin brokers, MAST search/product listing and Gaia
-  directory/TAP discovery are query APIs, not immutable artifacts.
+  TAP queries are query APIs, not immutable artifacts. Gaia file discovery uses
+  the cached release MD5 manifest, so it works offline after that manifest is cached.
 - The solar-spectrum regeneration script queries LASP by wavelength range.
   Its embedded output needs no runtime downloads. Embedded reflectance,
   spectra, map tiers, bright-galaxy tables and local transformations likewise

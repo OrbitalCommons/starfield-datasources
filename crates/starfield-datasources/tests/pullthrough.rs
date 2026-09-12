@@ -99,6 +99,16 @@ fn gaia_checksums_and_shards_both_use_mirror_and_bad_md5_is_evicted() {
     let path = Downloader::<Dr3>::download_file_with(&store, filename).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), bytes);
     assert_eq!(mirror.requests().len(), 2);
+    assert_eq!(
+        Downloader::<Dr3>::list_remote_with(&store).unwrap(),
+        vec![filename]
+    );
+    assert!(Downloader::<Dr3>::download_file_with(&store, "absent.csv.gz").is_err());
+    assert_eq!(
+        mirror.requests().len(),
+        2,
+        "discovery is cached; unlisted shards never fetch"
+    );
     store.remove(&artifact.key).unwrap();
     bytes[20] = 1;
     mirror.route(&format!("/artifact/{}", artifact.key), Response::ok(bytes));
@@ -142,4 +152,15 @@ fn mast_product_identity_and_mirror_fit_validation() {
     let path = client.download_product_with(&store, &product).unwrap();
     assert_eq!(std::fs::read(path).unwrap(), bytes);
     assert_eq!(mirror.requests().len(), 1);
+
+    let mut opaque = product.clone();
+    opaque.data_uri = Some("mast:HST/product/test:1&part=2.fits".into());
+    let opaque_artifact = opaque.artifact().unwrap();
+    assert!(opaque_artifact.key.as_str().starts_with("url/"));
+    let source =
+        starfield_datasource_utils::artifact_from_url(&opaque.resolve_url().unwrap()).unwrap();
+    assert_eq!(opaque_artifact.key, source.key);
+    assert!(opaque_artifact.sources[0].url.contains("%26part%3D2"));
+    opaque.data_uri = Some("mast:HST/product/test_1&part=2.fits".into());
+    assert_ne!(opaque_artifact.key, opaque.artifact().unwrap().key);
 }

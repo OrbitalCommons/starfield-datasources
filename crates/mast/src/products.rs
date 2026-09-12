@@ -112,7 +112,11 @@ impl DataProduct {
             .as_deref()
             .and_then(|uri| uri.strip_prefix("mast:"))
         {
-            artifact.key = ArtifactKey::new(format!("mast/{uri}")).map_err(datastore_error)?;
+            // Keep opaque URIs outside the key alphabet under the URL digest;
+            // replacing punctuation would let two different products collide.
+            if let Ok(key) = ArtifactKey::new(format!("mast/{uri}")) {
+                artifact.key = key;
+            }
         }
         artifact.sources = vec![Source::new(url)];
         artifact.check = if self.filename.to_ascii_lowercase().ends_with(".fits") {
@@ -151,11 +155,11 @@ impl DataProduct {
             return Some(url.clone());
         }
         if let Some(uri) = self.data_uri.as_ref() {
-            if let Some(rest) = uri.strip_prefix("mast:") {
-                return Some(format!(
-                    "https://mast.stsci.edu/api/v0.1/Download/file?uri=mast:{}",
-                    rest
-                ));
+            if uri.starts_with("mast:") {
+                let mut url = reqwest::Url::parse("https://mast.stsci.edu/api/v0.1/Download/file")
+                    .expect("constant MAST endpoint");
+                url.query_pairs_mut().append_pair("uri", uri);
+                return Some(url.into());
             }
             return Some(uri.clone());
         }

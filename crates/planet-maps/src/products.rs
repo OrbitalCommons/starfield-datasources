@@ -417,8 +417,26 @@ mod tests {
     fn pinned_urls_are_reachable() {
         for p in PRODUCTS {
             let client = starfield_datasource_utils::build_http_client(60).unwrap();
-            let response = client.head(p.url()).send();
-            assert!(response.is_ok(), "{}: {:?}", p.id, response.err());
+            let response = client
+                .head(p.url())
+                .send()
+                .and_then(|response| response.error_for_status())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{} live upstream failed (STARFIELD_ALLOW_UPSTREAM=1): {error}",
+                        p.id
+                    )
+                });
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or("");
+            assert!(
+                !content_type.to_ascii_lowercase().contains("text/html"),
+                "{} returned an HTML catalogue instead of a mosaic",
+                p.id
+            );
         }
     }
 }
