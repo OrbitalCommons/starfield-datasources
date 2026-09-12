@@ -16,8 +16,8 @@ fn gaia<R: GaiaRelease>(
     let mut checksum_artifact = Downloader::<R>::artifact(R::MD5_FILENAME)?;
     checksum_artifact.expected_bytes = Some(text.len() as u64);
     checksum_artifact.check = ContentCheck::All(vec![
-        checksum_artifact.check,
         ContentCheck::Sha256(starfield_datasource_utils::sha256_bytes(text.as_bytes())),
+        checksum_artifact.check,
     ]);
     manifest.artifacts.push(checksum_artifact);
     let mut count = 0;
