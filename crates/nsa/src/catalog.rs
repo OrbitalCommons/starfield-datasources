@@ -836,14 +836,7 @@ fn read_f32_fixed_array_opt<const N: usize>(
             N
         )));
     }
-    let n_rows = flat.len() / N;
-    let mut out = Vec::with_capacity(n_rows);
-    for chunk in flat.chunks_exact(N) {
-        let mut a = [0f32; N];
-        a.copy_from_slice(chunk);
-        out.push(a);
-    }
-    Ok(Some(out))
+    Ok(Some(flat.as_chunks::<N>().0.to_vec()))
 }
 
 /// Read a 2-D radius × band float array (e.g. `PROFMEAN` with repeat=105 for
