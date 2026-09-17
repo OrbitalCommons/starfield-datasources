@@ -33,8 +33,14 @@ PRODUCT = "Mars_Viking_ClrMosaic_global_925m.tif"
 # Output grid: 0.1 deg/px, the tier resolution agreed with the consumer.
 OUT_W, OUT_H = 3600, 1800
 
-MAGIC = b"SFEMv3\n"
-SCRIPT_VERSION = "2"
+MAGIC = b"SFEMv4\n"
+SCRIPT_VERSION = "3"
+
+# Albedo convention written to the header (0 = hemispherical Lambert,
+# 1 = geometric disk mean). Recorded because tiers in this format are not
+# interchangeable photometrically: see AlbedoConvention in tier.rs.
+ALBEDO_CONVENTION = 1
+ALBEDO_CONVENTION_NAME = "GeometricDiskMean"
 
 # USGS equirectangular: east-positive planetocentric, cell edges on the bounds,
 # north at row 0, column 0 at longitude 0.
@@ -134,6 +140,7 @@ def main(out_path):
     body = np.clip(abundance / scale * 255.0 + 0.5, 0, 255).astype(np.uint8).tobytes()
     names_blob = ENDMEMBER.encode()
     provenance = (
+        f"albedo convention: {ALBEDO_CONVENTION_NAME}; "
         f"USGS {PRODUCT}; visualisation product, DN rescaled so the "
         f"area-weighted mean is the published geometric albedo "
         f"{MARS_GEOMETRIC_ALBEDO} (Mallama et al. 2017); "
@@ -153,6 +160,7 @@ def main(out_path):
         len(body),
     )
     header += struct.pack("<f", scale)
+    header += struct.pack("<B", ALBEDO_CONVENTION)
     header += struct.pack("<H", len(names_blob)) + names_blob
     header += struct.pack("<H", len(provenance)) + provenance
 

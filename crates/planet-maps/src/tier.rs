@@ -21,7 +21,31 @@ use crate::grid::{Latitude, Longitude, MapGrid, RowOrder};
 use crate::map::{SampleFootprint, SurfaceSampler, MU_FLOOR};
 
 /// Format magic. Bump on any layout change.
-const MAGIC: &[u8] = b"SFEMv3\n";
+const MAGIC: &[u8] = b"SFEMv4\n";
+
+/// What a tier's reflectance values mean photometrically.
+///
+/// Two tiers in the same format can carry albedos that are not interchangeable,
+/// and treating one as the other misstates brightness by a large factor: scaling
+/// a geometric-albedo tier with a unit Lambert law put the Moon at 2.2x its
+/// published V flux at 86 degrees phase. So the convention is stored in the
+/// header rather than implied by which product a tier came from.
+///
+/// Values are **not** converted between conventions. The relation between
+/// geometric and normal albedo depends on the body's phase law -- the lunar
+/// opposition surge alone breaks the Lambert 2/3 factor -- so the consumer's
+/// photometric model is the right place to reconcile them, not this file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlbedoConvention {
+    /// The mix reproduces a hemispherical, Lambert-style albedo. Scale with a
+    /// law of unit Lambert albedo. Used by composition tiers whose endmember
+    /// weights were fitted to class-mean shortwave albedos.
+    HemisphericalLambert,
+    /// The disk-area-weighted mean reproduces the body's published geometric
+    /// albedo. Scale with a law normalised to unit geometric albedo. Used by
+    /// tiers rescaled from uncalibrated visualisation mosaics.
+    GeometricDiskMean,
+}
 
 /// Where a grid's coordinate bounds sit relative to its cells.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +67,7 @@ pub struct AbundanceTier {
     registration: Registration,
     naif_id: i32,
     scale: f32,
+    albedo_convention: AlbedoConvention,
     provenance: String,
     /// Mip pyramid. Level 0 is full resolution; each level is plane-major,
     /// `planes[e * w * h + row * w + col]`, 255 = abundance 1.0.
@@ -105,6 +130,13 @@ impl AbundanceTier {
         if !scale.is_finite() || scale <= 0.0 {
             return Err(err(format!("scale {scale} must be finite and positive")));
         }
+        need(p, 1, b)?;
+        let albedo_convention = match b[p] {
+            0 => AlbedoConvention::HemisphericalLambert,
+            1 => AlbedoConvention::GeometricDiskMean,
+            other => return Err(err(format!("unknown albedo convention {other}"))),
+        };
+        p += 1;
 
         let take_str = |p: &mut usize| -> Result<String> {
             need(*p, 2, b)?;
@@ -181,6 +213,7 @@ impl AbundanceTier {
             },
             naif_id,
             scale,
+            albedo_convention,
             provenance,
             levels: build_pyramid(TierLevel {
                 width,
@@ -233,6 +266,13 @@ impl AbundanceTier {
     /// `raw / 255 * scale`. Composition tiers use `1.0`.
     pub fn scale(&self) -> f32 {
         self.scale
+    }
+
+    /// What the reflectance values mean photometrically. Choose the unit
+    /// photometric law from this, not from the body or product name -- see
+    /// [`AlbedoConvention`].
+    pub fn albedo_convention(&self) -> AlbedoConvention {
+        self.albedo_convention
     }
 
     /// Abundance of plane `e` at `(col, row)` of `level`.
@@ -820,6 +860,66 @@ mod tests {
         // started eating real terrain.
         let frac = empty as f64 / (valid + empty) as f64;
         assert!(frac < 0.05, "no-data fraction {frac}");
+    }
+
+    #[test]
+    fn each_tier_declares_its_albedo_convention() {
+        // Earth's endmember weights were fitted to hemispherical class-mean
+        // albedos; Moon and Mars were rescaled to geometric albedo. A consumer
+        // that picks its unit law from this field gets both right.
+        assert_eq!(
+            earth_tier().unwrap().albedo_convention(),
+            AlbedoConvention::HemisphericalLambert
+        );
+        assert_eq!(
+            moon_tier().unwrap().albedo_convention(),
+            AlbedoConvention::GeometricDiskMean
+        );
+        assert_eq!(
+            mars_tier().unwrap().albedo_convention(),
+            AlbedoConvention::GeometricDiskMean
+        );
+    }
+
+    #[test]
+    fn provenance_states_the_albedo_convention() {
+        for (name, t) in [
+            ("earth", earth_tier().unwrap()),
+            ("moon", moon_tier().unwrap()),
+            ("mars", mars_tier().unwrap()),
+        ] {
+            assert!(
+                t.provenance().contains("albedo convention"),
+                "{name}: {}",
+                t.provenance()
+            );
+        }
+    }
+
+    #[test]
+    fn a_v3_tier_is_rejected_rather_than_read_with_an_assumed_convention() {
+        // v3 files carry no convention. Reading one and guessing would silently
+        // reintroduce the 2.2x brightness error, so the magic must not match.
+        let mut raw = Vec::new();
+        flate2::read::GzDecoder::new(EARTH_TIER_GZ)
+            .read_to_end(&mut raw)
+            .unwrap();
+        raw[..7].copy_from_slice(b"SFEMv3\n");
+        let err = AbundanceTier::from_bytes(&raw).unwrap_err().to_string();
+        assert!(err.contains("bad magic"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_convention_byte_is_rejected() {
+        let mut raw = Vec::new();
+        flate2::read::GzDecoder::new(EARTH_TIER_GZ)
+            .read_to_end(&mut raw)
+            .unwrap();
+        // Fixed header: magic(7) + 8 single-byte/u16 fields + i32(4) +
+        // 2*f64(16) + u64(8) + f32(4) = 47; the convention byte follows.
+        raw[47] = 7;
+        let err = AbundanceTier::from_bytes(&raw).unwrap_err().to_string();
+        assert!(err.contains("unknown albedo convention"), "{err}");
     }
 
     #[test]

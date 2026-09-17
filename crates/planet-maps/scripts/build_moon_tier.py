@@ -35,8 +35,14 @@ PRODUCT = "Lunar_LRO_LROC-WAC_Mosaic_global_100m_June2013.tif"
 
 OUT_W, OUT_H = 3600, 1800
 
-MAGIC = b"SFEMv3\n"
-SCRIPT_VERSION = "4"
+MAGIC = b"SFEMv4\n"
+SCRIPT_VERSION = "5"
+
+# Albedo convention written to the header (0 = hemispherical Lambert,
+# 1 = geometric disk mean). Recorded because tiers in this format are not
+# interchangeable photometrically: see AlbedoConvention in tier.rs.
+ALBEDO_CONVENTION = 1
+ALBEDO_CONVENTION_NAME = "GeometricDiskMean"
 
 # USGS equirectangular, east-positive planetocentric, north at row 0. The Moon's
 # flattening is ~1.2e-3 and USGS lunar products are defined on a sphere, so
@@ -145,6 +151,7 @@ def main(out_path):
     body = np.clip(abundance / scale * 255.0 + 0.5, 0, 255).astype(np.uint8).tobytes()
     names_blob = ENDMEMBER.encode()
     provenance = (
+        f"albedo convention: {ALBEDO_CONVENTION_NAME}; "
         f"USGS {PRODUCT} ({BAND_NM[0]:.0f}-{BAND_NM[1]:.0f} nm); "
         f"morphology mosaic, DN rescaled so the area-weighted mean is the "
         f"published geometric albedo {MOON_GEOMETRIC_ALBEDO} "
@@ -164,6 +171,7 @@ def main(out_path):
         len(body),
     )
     header += struct.pack("<f", scale)
+    header += struct.pack("<B", ALBEDO_CONVENTION)
     header += struct.pack("<H", len(names_blob)) + names_blob
     header += struct.pack("<H", len(provenance)) + provenance
 
